@@ -6,6 +6,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 import type { OfficialBulletinResult } from '../types/alert';
+import { safeFetchJson } from '../utils/apiClient';
 import { formatClockTime } from '../utils/formatters';
 
 const BULLETIN_CACHE_KEY = 'bayanihan:cached_bulletins_v1';
@@ -81,23 +82,18 @@ export function OfficialBulletinsPanel({
     setExpanded(true);
 
     try {
-      const res = await fetch('/api/bulletins', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          municipality: targetCity.trim() || 'Quezon City',
-          barangay: targetBarangay.trim(),
-          region: 'Metro Manila / Philippines',
-        }),
-      });
-
-      const payload = (await res.json()) as Partial<OfficialBulletinResult> & {
-        error?: string;
-      };
-
-      if (!res.ok) {
-        throw new Error(payload.error || `Request failed (${res.status})`);
-      }
+      const payload = await safeFetchJson<Partial<OfficialBulletinResult>>(
+        '/api/bulletins',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            municipality: targetCity.trim() || 'Quezon City',
+            barangay: targetBarangay.trim(),
+            region: 'Metro Manila / Philippines',
+          }),
+        }
+      );
 
       if (!payload.summary || !payload.fetchedAt) {
         throw new Error('Empty bulletin response received.');

@@ -17,6 +17,7 @@ import type {
   ReportDraft,
   ReverseGeocodeResult,
 } from '../types/alert';
+import { ApiClientError, safeFetchJson } from '../utils/apiClient';
 import { LocationSelector } from './LocationSelector';
 
 const MAPS_API_KEY = (
@@ -89,22 +90,9 @@ export function QuickReportModal({
     setGeocoding(true);
     setGeocodeNote(null);
     try {
-      const res = await fetch(
+      const data = await safeFetchJson<Partial<ReverseGeocodeResult>>(
         `/api/geocode/reverse?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`
       );
-      const data = (await res.json()) as Partial<ReverseGeocodeResult> & {
-        error?: string;
-        status?: string;
-      };
-
-      if (res.status === 429 || data.status === 'RESOURCE_EXHAUSTED') {
-        window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-        throw new Error(data.error || 'Maps geocoding quota reached.');
-      }
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Unable to reverse-geocode spot.');
-      }
 
       if (data.streetOrLandmark) {
         setStreetOrLandmark(data.streetOrLandmark);
@@ -128,6 +116,12 @@ export function QuickReportModal({
           : `Pinned at ${lat.toFixed(5)}, ${lng.toFixed(5)}`
       );
     } catch (err) {
+      if (
+        err instanceof ApiClientError &&
+        (err.status === 429 || err.code === 'RESOURCE_EXHAUSTED')
+      ) {
+        window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+      }
       setGeocodeNote(
         err instanceof Error
           ? `Coordinates saved (${lat.toFixed(5)}, ${lng.toFixed(5)}), but address auto-fill failed: ${err.message}`

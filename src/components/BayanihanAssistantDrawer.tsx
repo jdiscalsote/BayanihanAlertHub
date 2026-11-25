@@ -15,6 +15,7 @@ import type {
   EvacuationCenter,
   HazardReport,
 } from '../types/alert';
+import { safeFetchJson } from '../utils/apiClient';
 import { buildSafeTelHref, formatClockTime } from '../utils/formatters';
 
 interface BayanihanAssistantDrawerProps {
@@ -115,7 +116,12 @@ export function BayanihanAssistantDrawer({
           text: m.text,
         }));
 
-      const res = await fetch('/api/assistant/chat', {
+      const data = await safeFetchJson<{
+        reply?: string;
+        sources?: Array<{ title: string; url: string }>;
+        needsEmergencyHotlines?: boolean;
+        generatedAt?: string;
+      }>('/api/assistant/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -128,18 +134,6 @@ export function BayanihanAssistantDrawer({
           },
         }),
       });
-
-      const data = (await res.json()) as {
-        reply?: string;
-        sources?: Array<{ title: string; url: string }>;
-        needsEmergencyHotlines?: boolean;
-        generatedAt?: string;
-        error?: string;
-      };
-
-      if (!res.ok) {
-        throw new Error(data.error || `Request failed (${res.status})`);
-      }
 
       const assistantMsg: AssistantMessage = {
         id: `asst-${Date.now().toString(36)}`,
