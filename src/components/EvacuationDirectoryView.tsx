@@ -2,20 +2,29 @@ import { useState } from 'react';
 import {
   CheckCircle2,
   ExternalLink,
+  List,
+  Map as MapIcon,
   MapPin,
+  Navigation,
   RefreshCw,
   Search,
   Users,
   XCircle,
 } from 'lucide-react';
-import type { EvacuationCenter, EvacuationStatus } from '../types/alert';
+import type {
+  EvacuationCenter,
+  EvacuationStatus,
+  HazardReport,
+} from '../types/alert';
 import {
   buildSafeGoogleMapsUrl,
   formatRelativeTime,
 } from '../utils/formatters';
+import { EmergencyMapView } from './EmergencyMapView';
 
 interface EvacuationDirectoryViewProps {
   centers: EvacuationCenter[];
+  reports?: HazardReport[];
   isOffline: boolean;
   isRefreshing: boolean;
   usingSupabase: boolean;
@@ -69,6 +78,7 @@ function StatusIndicator({ status }: { status: EvacuationStatus }) {
 
 export function EvacuationDirectoryView({
   centers,
+  reports = [],
   isOffline,
   isRefreshing,
   usingSupabase,
@@ -79,6 +89,8 @@ export function EvacuationDirectoryView({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
   const [selectedMunicipality, setSelectedMunicipality] = useState<string>('All');
   const [query, setQuery] = useState('');
+  const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
+  const [routeCenterId, setRouteCenterId] = useState<string | null>(null);
 
   const availableMunicipalities = Array.from(
     new Set(centers.map((c) => c.city).filter(Boolean))
@@ -185,6 +197,39 @@ export function EvacuationDirectoryView({
 
         <div className="flex flex-wrap items-center gap-2">
           <div
+            role="group"
+            aria-label="Toggle shelter view mode"
+            className="inline-flex items-center rounded-md border border-slate-300 bg-slate-100 p-0.5"
+          >
+            <button
+              type="button"
+              onClick={() => setViewMode('list')}
+              aria-pressed={viewMode === 'list'}
+              className={`inline-flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                viewMode === 'list'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <List className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>List</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('map')}
+              aria-pressed={viewMode === 'map'}
+              className={`inline-flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                viewMode === 'map'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <MapIcon className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Map View</span>
+            </button>
+          </div>
+
+          <div
             role="tablist"
             aria-label="Filter evacuation centers by availability"
             className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 p-1"
@@ -225,7 +270,20 @@ export function EvacuationDirectoryView({
         </div>
       </div>
 
-      {filtered.length === 0 ? (
+      {viewMode === 'map' ? (
+        <EmergencyMapView
+          centers={filtered}
+          reports={reports.filter((r) =>
+            selectedMunicipality === 'All'
+              ? true
+              : (r.municipality || 'Quezon City') === selectedMunicipality
+          )}
+          isOffline={isOffline}
+          selectedMunicipality={selectedMunicipality}
+          initialRouteCenterId={routeCenterId}
+          onClearInitialRoute={() => setRouteCenterId(null)}
+        />
+      ) : filtered.length === 0 ? (
         <div className="rounded-lg border border-slate-200 bg-white p-10 text-center">
           <p className="font-display text-base font-semibold text-slate-900">
             No evacuation centers match this filter
@@ -311,18 +369,32 @@ export function EvacuationDirectoryView({
                     {center.contact_info}
                   </span>
 
-                  <a
-                    href={buildSafeGoogleMapsUrl(
-                      center.latitude,
-                      center.longitude
-                    )}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 font-semibold text-slate-900 underline decoration-slate-300 underline-offset-4 hover:decoration-slate-900"
-                  >
-                    <span>Google Maps</span>
-                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                  </a>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRouteCenterId(center.id);
+                        setViewMode('map');
+                      }}
+                      className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-slate-800"
+                    >
+                      <Navigation className="h-3 w-3" aria-hidden="true" />
+                      <span>Find Safe Route</span>
+                    </button>
+
+                    <a
+                      href={buildSafeGoogleMapsUrl(
+                        center.latitude,
+                        center.longitude
+                      )}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 font-semibold text-slate-900 underline decoration-slate-300 underline-offset-4 hover:decoration-slate-900"
+                    >
+                      <span>Google Maps</span>
+                      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                    </a>
+                  </div>
                 </div>
               </article>
             );

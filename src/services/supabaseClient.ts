@@ -170,13 +170,24 @@ export async function submitHazardReport(
       status: 'active',
     };
 
+    const extendedPayload: Record<string, unknown> = {
+      ...basePayload,
+      region: draft.region.trim(),
+      municipality: draft.municipality.trim(),
+    };
+    if (
+      typeof draft.latitude === 'number' &&
+      Number.isFinite(draft.latitude) &&
+      typeof draft.longitude === 'number' &&
+      Number.isFinite(draft.longitude)
+    ) {
+      extendedPayload.latitude = draft.latitude;
+      extendedPayload.longitude = draft.longitude;
+    }
+
     let { data, error } = await supabase
       .from('hazard_reports')
-      .insert({
-        ...basePayload,
-        region: draft.region.trim(),
-        municipality: draft.municipality.trim(),
-      })
+      .insert(extendedPayload)
       .select()
       .single();
 
@@ -241,13 +252,24 @@ export async function syncPendingReports(isOffline: boolean): Promise<{
         status: 'active',
       };
 
+      const extendedPayload: Record<string, unknown> = {
+        ...basePayload,
+        region: item.region ?? 'National Capital Region (NCR)',
+        municipality: item.municipality ?? 'Quezon City',
+      };
+      if (
+        typeof item.latitude === 'number' &&
+        Number.isFinite(item.latitude) &&
+        typeof item.longitude === 'number' &&
+        Number.isFinite(item.longitude)
+      ) {
+        extendedPayload.latitude = item.latitude;
+        extendedPayload.longitude = item.longitude;
+      }
+
       let { data, error } = await supabase
         .from('hazard_reports')
-        .insert({
-          ...basePayload,
-          region: item.region ?? 'National Capital Region (NCR)',
-          municipality: item.municipality ?? 'Quezon City',
-        })
+        .insert(extendedPayload)
         .select()
         .single();
 

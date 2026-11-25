@@ -58,6 +58,8 @@ export interface HazardReport {
   created_at: string;
   verified_at?: string | null;
   verified_by?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   /** Client-only flag when saved locally awaiting connectivity */
   queued_offline?: boolean;
 }
@@ -72,6 +74,8 @@ export interface ReportDraft {
   description: string;
   flood_level: FloodLevel;
   contact_optional?: string;
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 export interface EvacuationCenter {
@@ -136,3 +140,42 @@ export interface EmergencyHotline {
   coverage: string;
   description: string;
 }
+
+export interface GroundedSourceLink {
+  title: string;
+  url: string;
+}
+
+export interface OfficialBulletinResult {
+  locationLabel: string;
+  summary: string;
+  sources: GroundedSourceLink[];
+  fetchedAt: string;
+}
+
+export interface AssistantMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  createdAt: string;
+  sources?: GroundedSourceLink[];
+  needsEmergencyHotlines?: boolean;
+}
+
+export interface ReverseGeocodeResult {
+  formattedAddress: string;
+  streetOrLandmark: string;
+  barangay: string;
+  municipality: string;
+  region: string;
+}
+
+export interface NearbySafePlace {
+  id: string;
+  name: string;
+  address: string;
+  category: 'hospital' | 'barangay_hall';
+  latitude: number;
+  longitude: number;
+}
+

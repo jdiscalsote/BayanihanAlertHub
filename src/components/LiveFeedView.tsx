@@ -5,6 +5,8 @@ import {
   CheckCircle2,
   CloudOff,
   Info,
+  List,
+  Map as MapIcon,
   MapPin,
   Phone,
   RefreshCw,
@@ -16,6 +18,8 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { EMERGENCY_HOTLINES } from '../data/seedData';
+import { EmergencyMapView } from './EmergencyMapView';
+import { OfficialBulletinsPanel } from './OfficialBulletinsPanel';
 import type {
   EvacuationCenter,
   FeedFilter,
@@ -120,6 +124,7 @@ export function LiveFeedView({
   onJumpToShelters,
 }: LiveFeedViewProps) {
   const [selectedMunicipality, setSelectedMunicipality] = useState<string>('All');
+  const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
   const combinedReports = [...queuedReports, ...reports];
   const availableMunicipalities = Array.from(
     new Set([
@@ -163,6 +168,10 @@ export function LiveFeedView({
   const openSheltersCount = centers.filter(
     (c) => c.status === 'Open' || c.status === 'Near Full'
   ).length;
+
+  const filteredCenters = centers.filter((c) =>
+    selectedMunicipality === 'All' ? true : c.city === selectedMunicipality
+  );
 
   return (
     <div className="space-y-6">
@@ -235,6 +244,12 @@ export function LiveFeedView({
         </div>
       </div>
 
+      {/* Official Weather & LGU Bulletins (Gemini + Google Search Grounding) */}
+      <OfficialBulletinsPanel
+        selectedMunicipality={selectedMunicipality}
+        isOffline={isOffline}
+      />
+
       {/* Workspace Toolbar: Search, Filter Tabs, Connectivity & Sync Controls */}
       <div className="space-y-3 rounded-lg border border-slate-200 bg-white p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -270,6 +285,39 @@ export function LiveFeedView({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <div
+              role="group"
+              aria-label="Toggle feed display mode"
+              className="inline-flex items-center rounded-md border border-slate-300 bg-slate-100 p-0.5"
+            >
+              <button
+                type="button"
+                onClick={() => setViewMode('list')}
+                aria-pressed={viewMode === 'list'}
+                className={`inline-flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                  viewMode === 'list'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <List className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>List</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('map')}
+                aria-pressed={viewMode === 'map'}
+                className={`inline-flex cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                  viewMode === 'map'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <MapIcon className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Map View</span>
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={onToggleSimulatedOffline}
@@ -395,8 +443,15 @@ export function LiveFeedView({
         </div>
       )}
 
-      {/* Feed List */}
-      {filteredReports.length === 0 ? (
+      {/* Interactive Map View OR Feed List */}
+      {viewMode === 'map' ? (
+        <EmergencyMapView
+          centers={filteredCenters}
+          reports={filteredReports}
+          isOffline={isOffline}
+          selectedMunicipality={selectedMunicipality}
+        />
+      ) : filteredReports.length === 0 ? (
         <div className="rounded-lg border border-slate-200 bg-white px-6 py-12 text-center">
           <p className="font-display text-base font-semibold text-slate-900">
             No matching alerts in this view

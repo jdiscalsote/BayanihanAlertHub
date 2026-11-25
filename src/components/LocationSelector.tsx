@@ -18,6 +18,7 @@ interface LocationSelectorProps {
   barangay: string;
   allowAllBarangayOption?: boolean;
   lockedMunicipality?: string;
+  syncVersion?: number;
   onChange: (next: {
     region: string;
     municipality: string;
@@ -31,6 +32,7 @@ export function LocationSelector({
   barangay,
   allowAllBarangayOption = false,
   lockedMunicipality,
+  syncVersion = 0,
   onChange,
 }: LocationSelectorProps) {
   const baseId = useId();
@@ -43,6 +45,26 @@ export function LocationSelector({
   const [loadingMunis, setLoadingMunis] = useState(false);
   const [loadingBrgys, setLoadingBrgys] = useState(false);
   const [manualFallback, setManualFallback] = useState(false);
+
+  // Sync external auto-filled municipality/region (e.g. from map reverse geocoding)
+  useEffect(() => {
+    if (!syncVersion || lockedMunicipality || !municipality.trim()) return;
+    let active = true;
+    void (async () => {
+      const resolved = await findMunicipalityByName(municipality);
+      if (!active) return;
+      if (resolved) {
+        setManualFallback(false);
+        setSelectedRegionCode(resolved.regionCode);
+        setSelectedMuniCode(resolved.municipality.code);
+      } else {
+        setManualFallback(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [syncVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load all 17 Philippine regions (and lock to assigned municipality if provided)
   useEffect(() => {

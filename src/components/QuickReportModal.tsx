@@ -1,5 +1,11 @@
 import { useState, type FormEvent } from 'react';
-import { X } from 'lucide-react';
+import {
+  APIProvider,
+  AdvancedMarker,
+  Map as GoogleMap,
+  Pin,
+} from '@vis.gl/react-google-maps';
+import { Crosshair, MapPin, X } from 'lucide-react';
 import {
   getRemainingCooldownSeconds,
   recordReportSubmissionTimestamp,
@@ -9,8 +15,15 @@ import type {
   HazardCategory,
   HazardSeverity,
   ReportDraft,
+  ReverseGeocodeResult,
 } from '../types/alert';
 import { LocationSelector } from './LocationSelector';
+
+const MAPS_API_KEY = (
+  (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined) || ''
+).trim();
+
+const DEFAULT_PIN_CENTER = { lat: 14.676, lng: 121.0437 };
 
 interface QuickReportModalProps {
   isOpen: boolean;
@@ -51,10 +64,102 @@ export function QuickReportModal({
   const [floodLevel, setFloodLevel] = useState<FloodLevel>('Knee-deep');
   const [description, setDescription] = useState('');
   const [contactOptional, setContactOptional] = useState('');
+  const [pinnedCoords, setPinnedCoords] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
+  const [showMapPicker, setShowMapPicker] = useState(false);
+  const [geocoding, setGeocoding] = useState(false);
+  const [geocodeNote, setGeocodeNote] = useState<string | null>(null);
+  const [syncVersion, setSyncVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   if (!isOpen) return null;
+
+  async function reverseGeocodeCoordinates(lat: number, lng: number) {
+    setPinnedCoords({ lat, lng });
+    if (isOffline) {
+      setGeocodeNote(
+        `Coordinates pinned (${lat.toFixed(5)}, ${lng.toFixed(5)}). Address auto-fill skipped while offline.`
+      );
+      return;
+    }
+
+    setGeocoding(true);
+    setGeocodeNote(null);
+    try {
+      const res = await fetch(
+        `/api/geocode/reverse?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`
+      );
+      const data = (await res.json()) as Partial<ReverseGeocodeResult> & {
+        error?: string;
+        status?: string;
+      };
+
+      if (res.status === 429 || data.status === 'RESOURCE_EXHAUSTED') {
+        window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+        throw new Error(data.error || 'Maps geocoding quota reached.');
+      }
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Unable to reverse-geocode spot.');
+      }
+
+      if (data.streetOrLandmark) {
+        setStreetOrLandmark(data.streetOrLandmark);
+      }
+      if (data.region) {
+        setRegion(data.region);
+      }
+      if (data.municipality) {
+        setMunicipality(data.municipality);
+      }
+      if (data.barangay) {
+        setBarangay(data.barangay);
+      }
+      if (data.municipality || data.barangay) {
+        setSyncVersion((v) => v + 1);
+      }
+
+      setGeocodeNote(
+        data.formattedAddress
+          ? `Pinned: ${data.formattedAddress}`
+          : `Pinned at ${lat.toFixed(5)}, ${lng.toFixed(5)}`
+      );
+    } catch (err) {
+      setGeocodeNote(
+        err instanceof Error
+          ? `Coordinates saved (${lat.toFixed(5)}, ${lng.toFixed(5)}), but address auto-fill failed: ${err.message}`
+          : `Coordinates saved (${lat.toFixed(5)}, ${lng.toFixed(5)}).`
+      );
+    } finally {
+      setGeocoding(false);
+    }
+  }
+
+  function handleUseCurrentGps() {
+    if (!navigator.geolocation) {
+      setError('Geolocation is not supported on this browser.');
+      return;
+    }
+    setGeocoding(true);
+    setGeocodeNote('Detecting your GPS location...');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setShowMapPicker(true);
+        void reverseGeocodeCoordinates(pos.coords.latitude, pos.coords.longitude);
+      },
+      () => {
+        setGeocoding(false);
+        setGeocodeNote(
+          'Unable to access GPS. Tap the map below to drop a pin manually.'
+        );
+        setShowMapPicker(true);
+      },
+      { enableHighAccuracy: true, timeout: 7000 }
+    );
+  }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -97,11 +202,15 @@ export function QuickReportModal({
         flood_level: floodLevel,
         description: description.trim(),
         contact_optional: contactOptional.trim() || undefined,
+        latitude: pinnedCoords?.lat ?? null,
+        longitude: pinnedCoords?.lng ?? null,
       });
       recordReportSubmissionTimestamp();
       setStreetOrLandmark('');
       setDescription('');
       setContactOptional('');
+      setPinnedCoords(null);
+      setGeocodeNote(null);
       onClose();
     } catch (err) {
       setError(
@@ -134,7 +243,7 @@ export function QuickReportModal({
               No account required.{' '}
               {isOffline
                 ? 'You are offline — this report will be queued locally and auto-synced once signal returns.'
-                : 'Select any Philippine Region, City/Municipality, and Barangay. Queued immediately for responder review.'}
+                : 'Pin your spot on the map to auto-fill your street/barangay or select your PSGC location below.'}
             </p>
           </div>
           <button
@@ -226,11 +335,89 @@ export function QuickReportModal({
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5">
+          {/* Interactive Map Pin Picker & Auto-Fill Reverse Geocoding */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800">
+                <MapPin className="h-3.5 w-3.5 text-red-600" aria-hidden="true" />
+                <span>Pin Exact Spot &amp; Auto-Fill Location</span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleUseCurrentGps}
+                  disabled={geocoding}
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100 disabled:opacity-60"
+                >
+                  <Crosshair className="h-3.5 w-3.5 text-sky-700" aria-hidden="true" />
+                  <span>{geocoding ? 'Locating...' : 'Use My GPS'}</span>
+                </button>
+
+                {MAPS_API_KEY && !isOffline && (
+                  <button
+                    type="button"
+                    onClick={() => setShowMapPicker((prev) => !prev)}
+                    className="cursor-pointer rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100"
+                  >
+                    {showMapPicker ? 'Hide Map Picker' : 'Pick on Map'}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {showMapPicker && MAPS_API_KEY && !isOffline && (
+              <div className="space-y-1.5">
+                <p className="text-[11px] text-slate-600">
+                  Tap anywhere on the map to drop your hazard pin and auto-fill the street &amp; barangay.
+                </p>
+                <div className="h-52 w-full overflow-hidden rounded-md border border-slate-300">
+                  <APIProvider
+                    apiKey={MAPS_API_KEY}
+                    language="en"
+                    region="PH"
+                  >
+                    <GoogleMap
+                      defaultCenter={pinnedCoords || DEFAULT_PIN_CENTER}
+                      defaultZoom={14}
+                      mapId="DEMO_MAP_ID"
+                      gestureHandling="greedy"
+                      internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
+                      onClick={(ev) => {
+                        const latLng = ev.detail.latLng;
+                        if (latLng) {
+                          void reverseGeocodeCoordinates(latLng.lat, latLng.lng);
+                        }
+                      }}
+                      style={{ width: '100%', height: '100%' }}
+                    >
+                      {pinnedCoords && (
+                        <AdvancedMarker position={pinnedCoords}>
+                          <Pin
+                            background="#dc2626"
+                            borderColor="#7f1d1d"
+                            glyphColor="#ffffff"
+                            glyphText="!"
+                          />
+                        </AdvancedMarker>
+                      )}
+                    </GoogleMap>
+                  </APIProvider>
+                </div>
+              </div>
+            )}
+
+            {geocodeNote && (
+              <p className="rounded border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700">
+                {geocodeNote}
+              </p>
+            )}
+
             <LocationSelector
               region={region}
               municipality={municipality}
               barangay={barangay}
+              syncVersion={syncVersion}
               onChange={(next) => {
                 setRegion(next.region);
                 setMunicipality(next.municipality);
@@ -262,7 +449,7 @@ export function QuickReportModal({
               htmlFor="report-notes"
               className="block text-xs font-semibold text-slate-700"
             >
-              Situation & Passability Note
+              Situation &amp; Passability Note
             </label>
             <textarea
               id="report-notes"

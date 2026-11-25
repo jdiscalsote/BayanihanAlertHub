@@ -59,7 +59,9 @@ CREATE TABLE IF NOT EXISTS public.hazard_reports (
   confirmations_count INTEGER NOT NULL DEFAULT 1 CHECK (confirmations_count >= 1),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   verified_at TIMESTAMPTZ DEFAULT NULL,
-  verified_by UUID REFERENCES public.moderator_profiles(id) ON DELETE SET NULL
+  verified_by UUID REFERENCES public.moderator_profiles(id) ON DELETE SET NULL,
+  latitude DOUBLE PRECISION DEFAULT NULL,
+  longitude DOUBLE PRECISION DEFAULT NULL
 );
 
 -- Official LGU / Barangay Advisories
@@ -83,7 +85,9 @@ ALTER TABLE public.evacuation_centers
   ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT 'National Capital Region (NCR)';
 ALTER TABLE public.hazard_reports
   ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT 'National Capital Region (NCR)',
-  ADD COLUMN IF NOT EXISTS municipality TEXT NOT NULL DEFAULT 'Quezon City';
+  ADD COLUMN IF NOT EXISTS municipality TEXT NOT NULL DEFAULT 'Quezon City',
+  ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION DEFAULT NULL;
 ALTER TABLE public.advisories
   ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT 'National Capital Region (NCR)',
   ADD COLUMN IF NOT EXISTS municipality TEXT NOT NULL DEFAULT 'All Municipalities';
