@@ -1,0 +1,6 @@
+{
+  "name": "Bayanihan Alert Hub",
+  "description": "Typhoon, Flood & Evacuation Tracker for Philippine communities with zero-friction reporting, offline sync queue, and barangay responder verification.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
