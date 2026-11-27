@@ -65,6 +65,21 @@ const FILTER_OPTIONS: FeedFilter[] = [
   'Verified Only',
 ];
 
+type AlertStatusFilter =
+  | 'All'
+  | 'Active'
+  | 'Resolved'
+  | 'Pending Review'
+  | 'Queued Offline';
+
+const STATUS_FILTER_OPTIONS: AlertStatusFilter[] = [
+  'All',
+  'Active',
+  'Resolved',
+  'Pending Review',
+  'Queued Offline',
+];
+
 function SeverityLabel({ severity }: { severity: HazardSeverity }) {
   switch (severity) {
     case 'Critical':
@@ -123,6 +138,7 @@ export function LiveFeedView({
   onJumpToShelters,
 }: LiveFeedViewProps) {
   const [selectedMunicipality, setSelectedMunicipality] = useState<string>('All');
+  const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>('All');
   const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
   const combinedReports = [...queuedReports, ...reports];
   const availableMunicipalities = Array.from(
@@ -139,6 +155,21 @@ export function LiveFeedView({
   const filteredReports = combinedReports.filter((item) => {
     const itemMuni = item.municipality || 'Quezon City';
     if (selectedMunicipality !== 'All' && itemMuni !== selectedMunicipality) {
+      return false;
+    }
+    if (statusFilter === 'Active' && item.status !== 'active') {
+      return false;
+    }
+    if (statusFilter === 'Resolved' && item.status !== 'resolved') {
+      return false;
+    }
+    if (
+      statusFilter === 'Pending Review' &&
+      (item.status !== 'active' || item.is_verified || item.queued_offline)
+    ) {
+      return false;
+    }
+    if (statusFilter === 'Queued Offline' && !item.queued_offline) {
       return false;
     }
     if (filter === 'Verified Only' && !item.is_verified) return false;
@@ -266,12 +297,27 @@ export function LiveFeedView({
               value={selectedMunicipality}
               onChange={(e) => setSelectedMunicipality(e.target.value)}
               aria-label="Filter alerts by municipality"
-              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 focus:border-slate-900 focus:outline-none sm:w-52"
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 focus:border-slate-900 focus:outline-none sm:w-48"
             >
               <option value="All">All Municipalities</option>
               {availableMunicipalities.map((muni) => (
                 <option key={muni} value={muni}>
                   {muni}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={statusFilter}
+              onChange={(e) =>
+                setStatusFilter(e.target.value as AlertStatusFilter)
+              }
+              aria-label="Filter alerts by status"
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 focus:border-slate-900 focus:outline-none sm:w-44"
+            >
+              {STATUS_FILTER_OPTIONS.map((statusOpt) => (
+                <option key={statusOpt} value={statusOpt}>
+                  {statusOpt === 'All' ? 'All Statuses' : statusOpt}
                 </option>
               ))}
             </select>
@@ -450,15 +496,34 @@ export function LiveFeedView({
             No matching alerts in this view
           </p>
           <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">
-            Try clearing your barangay search or filter, or submit a community flood or hazard update right away without signing in.
+            Try clearing your barangay search, status, or category filter, or submit a community flood or hazard update right away without signing in.
           </p>
-          <button
-            type="button"
-            onClick={onOpenReportModal}
-            className="mt-4 cursor-pointer rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
-          >
-            Submit Quick Report
-          </button>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+            {(filter !== 'All' ||
+              statusFilter !== 'All' ||
+              selectedMunicipality !== 'All' ||
+              searchQuery.trim() !== '') && (
+              <button
+                type="button"
+                onClick={() => {
+                  onFilterChange('All');
+                  setStatusFilter('All');
+                  setSelectedMunicipality('All');
+                  onSearchChange('');
+                }}
+                className="cursor-pointer rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Reset Filters
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onOpenReportModal}
+              className="cursor-pointer rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
+            >
+              Submit Quick Report
+            </button>
+          </div>
         </div>
       ) : (
         <div className="space-y-3">
