@@ -1,11 +1,14 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import {
+  AlertTriangle,
   Backpack,
   Check,
   CheckCircle2,
   Copy,
   Crosshair,
+  Database,
   MessageSquareWarning,
+  RefreshCw,
   RotateCcw,
   Search,
   Share2,
@@ -106,14 +109,42 @@ function loadCheckedGoBag(): Record<string, boolean> {
   }
 }
 
+const SAFETY_CHECKINS_SQL = `CREATE TABLE IF NOT EXISTS public.safety_checkins (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  full_name TEXT NOT NULL CHECK (char_length(full_name) BETWEEN 2 AND 120),
+  status TEXT NOT NULL CHECK (status IN ('Evacuated to Shelter', 'Safe at Home', 'Needs Contact')) DEFAULT 'Evacuated to Shelter',
+  municipality TEXT NOT NULL DEFAULT 'Quezon City',
+  barangay TEXT NOT NULL CHECK (char_length(barangay) BETWEEN 2 AND 100),
+  evacuation_center TEXT DEFAULT NULL CHECK (evacuation_center IS NULL OR char_length(evacuation_center) <= 160),
+  household_count INTEGER NOT NULL DEFAULT 1 CHECK (household_count BETWEEN 1 AND 50),
+  note TEXT NOT NULL DEFAULT '' CHECK (char_length(note) <= 280),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.safety_checkins ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT ON public.safety_checkins TO anon, authenticated;
+GRANT DELETE ON public.safety_checkins TO authenticated;
+DROP POLICY IF EXISTS "Public read safety check-ins" ON public.safety_checkins;
+CREATE POLICY "Public read safety check-ins" ON public.safety_checkins FOR SELECT TO anon, authenticated USING (true);
+DROP POLICY IF EXISTS "Public insert safety check-ins" ON public.safety_checkins;
+CREATE POLICY "Public insert safety check-ins" ON public.safety_checkins FOR INSERT TO anon, authenticated WITH CHECK (true);
+DROP POLICY IF EXISTS "Moderators delete safety check-ins" ON public.safety_checkins;
+CREATE POLICY "Moderators delete safety check-ins" ON public.safety_checkins FOR DELETE TO authenticated USING (public.can_manage_municipality(municipality));`;
+
 interface SafetyToolsViewProps {
   checkins: SafetyCheckin[];
   queuedCheckins: SafetyCheckin[];
   centers: EvacuationCenter[];
   isOffline: boolean;
+  isSyncing: boolean;
+  isRefreshing: boolean;
+  supabaseConfigured: boolean;
+  usingSupabaseCheckins: boolean;
+  checkinSyncError: string | null;
   onSubmitCheckin: (
     draft: SafetyCheckinDraft
-  ) => Promise<{ queued: boolean }>;
+  ) => Promise<{ queued: boolean; syncError?: string }>;
+  onSyncCheckins: () => void;
+  onRefreshCheckins: () => void;
 }
 
 const CHECKIN_STATUSES: SafetyCheckinStatus[] = [
@@ -127,7 +158,14 @@ export function SafetyToolsView({
   queuedCheckins,
   centers,
   isOffline,
+  isSyncing,
+  isRefreshing,
+  supabaseConfigured,
+  usingSupabaseCheckins,
+  checkinSyncError,
   onSubmitCheckin,
+  onSyncCheckins,
+  onRefreshCheckins,
 }: SafetyToolsViewProps) {
   // 1. One-Tap SOS SMS & Share Location state
   const [sosMode, setSosMode] = useState<'rescue' | 'safe'>('rescue');
@@ -155,7 +193,11 @@ export function SafetyToolsView({
   const [householdCount, setHouseholdCount] = useState(1);
   const [checkinNote, setCheckinNote] = useState('');
   const [submittingCheckin, setSubmittingCheckin] = useState(false);
-  const [checkinFeedback, setCheckinFeedback] = useState<string | null>(null);
+  const [checkinFeedback, setCheckinFeedback] = useState<{
+    tone: 'success' | 'warning';
+    text: string;
+  } | null>(null);
+  const [copiedSql, setCopiedSql] = useState(false);
 
   // 3. Go-Bag Checklist state
   const [checkedItems, setCheckedItems] = useState<Record<string, boolean>>(
@@ -234,14 +276,30 @@ export function SafetyToolsView({
     await handleCopySosMessage();
   }
 
+  async function handleCopySql() {
+    try {
+      await navigator.clipboard.writeText(SAFETY_CHECKINS_SQL);
+      setCopiedSql(true);
+      setTimeout(() => setCopiedSql(false), 2500);
+    } catch {
+      // Clipboard blocked
+    }
+  }
+
   async function handleCheckinSubmit(e: FormEvent) {
     e.preventDefault();
     if (fullName.trim().length < 2) {
-      setCheckinFeedback('Please enter a full name or family name.');
+      setCheckinFeedback({
+        tone: 'warning',
+        text: 'Please enter a full name or family name.',
+      });
       return;
     }
     if (barangay.trim().length < 2) {
-      setCheckinFeedback('Please enter your barangay.');
+      setCheckinFeedback({
+        tone: 'warning',
+        text: 'Please enter your barangay.',
+      });
       return;
     }
 
@@ -259,15 +317,24 @@ export function SafetyToolsView({
       });
       setFullName('');
       setCheckinNote('');
-      setCheckinFeedback(
-        result.queued
-          ? 'Saved locally to your offline queue. It will auto-sync once signal returns.'
-          : 'Safety check-in posted so relatives can find your status.'
-      );
+      if (result.queued) {
+        setCheckinFeedback({
+          tone: 'warning',
+          text: result.syncError
+            ? `Saved locally in queue, but live Supabase insert failed: ${result.syncError}`
+            : 'Saved locally to your offline queue. It will auto-sync once signal returns.',
+        });
+      } else {
+        setCheckinFeedback({
+          tone: 'success',
+          text: 'Saved to live Supabase database so relatives can find your status across devices.',
+        });
+      }
     } catch (err) {
-      setCheckinFeedback(
-        err instanceof Error ? err.message : 'Unable to save check-in.'
-      );
+      setCheckinFeedback({
+        tone: 'warning',
+        text: err instanceof Error ? err.message : 'Unable to save check-in.',
+      });
     } finally {
       setSubmittingCheckin(false);
     }
@@ -577,25 +644,82 @@ export function SafetyToolsView({
         className="grid gap-6 lg:grid-cols-12"
       >
         <div className="rounded-lg border border-slate-200 bg-white p-5 lg:col-span-5">
-          <div className="flex items-center gap-2">
-            <UserCheck className="h-5 w-5 text-emerald-700" aria-hidden="true" />
-            <h2 className="font-display text-base font-bold text-slate-900">
-              Log Family &ldquo;I&rsquo;m Safe&rdquo; Check-In
-            </h2>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <UserCheck className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+              <h2 className="font-display text-base font-bold text-slate-900">
+                Log Family &ldquo;I&rsquo;m Safe&rdquo; Check-In
+              </h2>
+            </div>
+            <span
+              className={`inline-flex items-center gap-1 text-[11px] font-semibold ${
+                usingSupabaseCheckins
+                  ? 'text-emerald-700'
+                  : 'text-amber-700'
+              }`}
+            >
+              <Database className="h-3 w-3" aria-hidden="true" />
+              <span>
+                {isOffline
+                  ? 'Offline Queue'
+                  : usingSupabaseCheckins
+                    ? 'Live DB Ready'
+                    : 'Local Fallback'}
+              </span>
+            </span>
           </div>
           <p className="mt-1 text-xs text-slate-600">
             {isOffline
               ? 'Offline mode active — your check-in will queue on-device and sync when signal returns.'
-              : 'Post where you evacuated or confirm your household is safe so relatives can find you.'}
+              : usingSupabaseCheckins
+                ? 'Connected to live Supabase DB — check-ins save online and appear across devices.'
+                : 'Currently saving locally because live Supabase check-in sync is unavailable.'}
           </p>
+
+          {checkinSyncError && !isOffline && (
+            <div
+              role="alert"
+              className="mt-3 space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950"
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-700" aria-hidden="true" />
+                <span>{checkinSyncError}</span>
+              </div>
+              {supabaseConfigured && (
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleCopySql()}
+                    className="inline-flex cursor-pointer items-center gap-1 rounded border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-amber-950 hover:bg-amber-100"
+                  >
+                    <Copy className="h-3 w-3" aria-hidden="true" />
+                    <span>{copiedSql ? 'Copied SQL!' : 'Copy safety_checkins SQL'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onRefreshCheckins}
+                    disabled={isRefreshing}
+                    className="inline-flex cursor-pointer items-center gap-1 rounded bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${isRefreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
+                    <span>Test Connection</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           <form onSubmit={handleCheckinSubmit} className="mt-4 space-y-3">
             {checkinFeedback && (
               <div
                 role="status"
-                className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-900"
+                className={`rounded-md border px-3 py-2 text-xs font-medium ${
+                  checkinFeedback.tone === 'warning'
+                    ? 'border-amber-300 bg-amber-50 text-amber-950'
+                    : 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                }`}
               >
-                {checkinFeedback}
+                {checkinFeedback.text}
               </div>
             )}
 
@@ -760,10 +884,27 @@ export function SafetyToolsView({
                 Search by family name, barangay, municipality, or shelter name.
               </p>
             </div>
-            <span className="inline-flex items-center gap-1 font-mono text-xs font-medium text-slate-600">
-              <Users className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>{filteredCheckins.length} listed</span>
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              {queuedCheckins.length > 0 && !isOffline && (
+                <button
+                  type="button"
+                  onClick={onSyncCheckins}
+                  disabled={isSyncing}
+                  className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-950 hover:bg-amber-100 disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-3 w-3 ${isSyncing ? 'animate-spin' : ''}`} aria-hidden="true" />
+                  <span>
+                    {isSyncing
+                      ? 'Syncing...'
+                      : `Sync ${queuedCheckins.length} Local to DB`}
+                  </span>
+                </button>
+              )}
+              <span className="inline-flex items-center gap-1 font-mono text-xs font-medium text-slate-600">
+                <Users className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>{filteredCheckins.length} listed</span>
+              </span>
+            </div>
           </div>
 
           <div className="relative mt-3">

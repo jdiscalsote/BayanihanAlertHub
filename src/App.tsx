@@ -19,6 +19,8 @@ import {
   loadCachedCheckins,
   loadCachedSnapshot,
   markReportConfirmedLocally,
+  replacePendingCheckinQueue,
+  replacePendingQueue,
   saveCachedAdvisories,
   saveCachedCenters,
   saveCachedCheckins,
@@ -29,6 +31,10 @@ import {
   confirmActiveReport,
   createEvacuationCenter,
   createOfficialAdvisory,
+  deleteEvacuationCenter,
+  deleteHazardReport,
+  deleteOfficialAdvisory,
+  deleteSafetyCheckin,
   fetchAllLiveData,
   fetchSafetyCheckins,
   getActiveModeratorSession,
@@ -93,6 +99,7 @@ export default function App() {
 
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [lastSyncError, setLastSyncError] = useState<string | null>(null);
+  const [checkinSyncError, setCheckinSyncError] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [bannerFeedback, setBannerFeedback] = useState<string | null>(null);
@@ -146,7 +153,7 @@ export default function App() {
     if (isOffline || !isSupabaseConfigured) return;
     setIsRefreshing(true);
     try {
-      const [bundle, liveCheckins] = await Promise.all([
+      const [bundle, checkinsResult] = await Promise.all([
         fetchAllLiveData(),
         fetchSafetyCheckins(),
       ]);
@@ -157,8 +164,11 @@ export default function App() {
         setLastSyncedAt(bundle.syncedAt);
         setLastSyncError(null);
       }
-      if (liveCheckins) {
-        setCheckins(liveCheckins);
+      if (checkinsResult.checkins) {
+        setCheckins(checkinsResult.checkins);
+        setCheckinSyncError(null);
+      } else if (checkinsResult.error) {
+        setCheckinSyncError(checkinsResult.error);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'network error';
@@ -193,6 +203,11 @@ export default function App() {
           void saveCachedCheckins(updated);
           return updated;
         });
+      }
+      if (checkinRes.error) {
+        setCheckinSyncError(checkinRes.error);
+      } else if (checkinRes.remaining.length === 0) {
+        setCheckinSyncError(null);
       }
       const totalSynced = reportRes.synced.length + checkinRes.synced.length;
       if (totalSynced > 0) {
@@ -263,6 +278,7 @@ export default function App() {
       onReportChange: () => void refreshFromRemote(),
       onCenterChange: () => void refreshFromRemote(),
       onAdvisoryChange: () => void refreshFromRemote(),
+      onCheckinChange: () => void refreshFromRemote(),
     });
   }, [isOffline, batterySaver, refreshFromRemote]);
 
@@ -296,18 +312,22 @@ export default function App() {
 
   async function handleSubmitCheckin(
     draft: SafetyCheckinDraft
-  ): Promise<{ queued: boolean }> {
+  ): Promise<{ queued: boolean; syncError?: string }> {
     const result = await submitSafetyCheckin(draft, isOffline);
     if (result.queued) {
       setQueuedCheckins((prev) => [result.checkin, ...prev]);
+      if (result.syncError) {
+        setCheckinSyncError(result.syncError);
+      }
     } else {
+      setCheckinSyncError(null);
       setCheckins((prev) => {
         const updated = [result.checkin, ...prev];
         void saveCachedCheckins(updated);
         return updated;
       });
     }
-    return { queued: result.queued };
+    return { queued: result.queued, syncError: result.syncError };
   }
 
   async function handleSubmitReport(
@@ -485,6 +505,64 @@ export default function App() {
     });
   }
 
+  async function handleDeleteReport(reportId: string) {
+    if (isSupabaseConfigured && !isOffline && isUuid(reportId)) {
+      await deleteHazardReport(reportId);
+    }
+    setQueuedReports((prev) => {
+      const updated = prev.filter((r) => r.id !== reportId);
+      if (updated.length !== prev.length) {
+        void replacePendingQueue(updated);
+      }
+      return updated;
+    });
+    setReports((prev) => {
+      const updated = prev.filter((r) => r.id !== reportId);
+      void saveCachedReports(updated);
+      return updated;
+    });
+  }
+
+  async function handleDeleteCenter(centerId: string) {
+    if (isSupabaseConfigured && !isOffline && isUuid(centerId)) {
+      await deleteEvacuationCenter(centerId);
+    }
+    setCenters((prev) => {
+      const updated = prev.filter((c) => c.id !== centerId);
+      void saveCachedCenters(updated);
+      return updated;
+    });
+  }
+
+  async function handleDeleteAdvisory(advisoryId: string) {
+    if (isSupabaseConfigured && !isOffline && isUuid(advisoryId)) {
+      await deleteOfficialAdvisory(advisoryId);
+    }
+    setAdvisories((prev) => {
+      const updated = prev.filter((a) => a.id !== advisoryId);
+      void saveCachedAdvisories(updated);
+      return updated;
+    });
+  }
+
+  async function handleDeleteCheckin(checkinId: string) {
+    if (isSupabaseConfigured && !isOffline && isUuid(checkinId)) {
+      await deleteSafetyCheckin(checkinId);
+    }
+    setQueuedCheckins((prev) => {
+      const updated = prev.filter((c) => c.id !== checkinId);
+      if (updated.length !== prev.length) {
+        void replacePendingCheckinQueue(updated);
+      }
+      return updated;
+    });
+    setCheckins((prev) => {
+      const updated = prev.filter((c) => c.id !== checkinId);
+      void saveCachedCheckins(updated);
+      return updated;
+    });
+  }
+
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 text-slate-900">
       {mapsQuotaExceeded && (
@@ -603,7 +681,16 @@ export default function App() {
             queuedCheckins={queuedCheckins}
             centers={centers}
             isOffline={isOffline}
+            isSyncing={isSyncing}
+            isRefreshing={isRefreshing}
+            supabaseConfigured={isSupabaseConfigured}
+            usingSupabaseCheckins={
+              isSupabaseConfigured && !isOffline && !checkinSyncError
+            }
+            checkinSyncError={checkinSyncError}
             onSubmitCheckin={handleSubmitCheckin}
+            onSyncCheckins={() => void handleSyncQueue()}
+            onRefreshCheckins={() => void refreshFromRemote()}
           />
         )}
 
@@ -615,6 +702,8 @@ export default function App() {
             reports={reports}
             centers={centers}
             advisories={advisories}
+            checkins={[...queuedCheckins, ...checkins]}
+            checkinSyncError={checkinSyncError}
             onSignIn={async (email, password) => {
               const profile = await signInModerator(email, password);
               setModerator(profile);
@@ -634,10 +723,14 @@ export default function App() {
               setModerator(null);
             }}
             onModerateReport={handleModerateReport}
+            onDeleteReport={handleDeleteReport}
             onUpdateCenter={handleUpdateCenter}
             onCreateCenter={handleCreateCenter}
+            onDeleteCenter={handleDeleteCenter}
             onCreateAdvisory={handleCreateAdvisory}
             onArchiveAdvisory={handleArchiveAdvisory}
+            onDeleteAdvisory={handleDeleteAdvisory}
+            onDeleteCheckin={handleDeleteCheckin}
             onRefreshLiveData={refreshFromRemote}
           />
         )}

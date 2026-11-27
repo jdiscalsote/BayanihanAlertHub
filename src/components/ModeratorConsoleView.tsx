@@ -1,11 +1,14 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import {
+  AlertTriangle,
   CheckCircle2,
   LogOut,
   Plus,
+  Search,
   Shield,
   ShieldCheck,
   Trash2,
+  Users,
 } from 'lucide-react';
 import { isSupabaseConfigured, isUuid } from '../services/supabaseClient';
 import type {
@@ -17,6 +20,7 @@ import type {
   ModeratorProfile,
   NewEvacuationCenterDraft,
   ReportStatus,
+  SafetyCheckin,
 } from '../types/alert';
 import { formatRelativeTime } from '../utils/formatters';
 import { LocationSelector } from './LocationSelector';
@@ -26,6 +30,8 @@ interface ModeratorConsoleViewProps {
   reports: HazardReport[];
   centers: EvacuationCenter[];
   advisories: Advisory[];
+  checkins: SafetyCheckin[];
+  checkinSyncError: string | null;
   onSignIn: (email: string, password: string) => Promise<void>;
   onDemoSignIn: () => void;
   onSignOut: () => Promise<void>;
@@ -33,6 +39,7 @@ interface ModeratorConsoleViewProps {
     reportId: string,
     updates: { is_verified?: boolean; status?: ReportStatus }
   ) => Promise<void>;
+  onDeleteReport: (reportId: string) => Promise<void>;
   onUpdateCenter: (
     centerId: string,
     updates: {
@@ -42,6 +49,7 @@ interface ModeratorConsoleViewProps {
     }
   ) => Promise<void>;
   onCreateCenter: (draft: NewEvacuationCenterDraft) => Promise<void>;
+  onDeleteCenter: (centerId: string) => Promise<void>;
   onCreateAdvisory: (input: {
     title: string;
     message: string;
@@ -51,24 +59,32 @@ interface ModeratorConsoleViewProps {
     barangay: string;
   }) => Promise<void>;
   onArchiveAdvisory: (advisoryId: string) => Promise<void>;
+  onDeleteAdvisory: (advisoryId: string) => Promise<void>;
+  onDeleteCheckin: (checkinId: string) => Promise<void>;
   onRefreshLiveData: () => Promise<void>;
 }
 
-type ConsoleTab = 'triage' | 'shelters' | 'advisories';
+type ConsoleTab = 'triage' | 'shelters' | 'advisories' | 'checkins';
 
 export function ModeratorConsoleView({
   moderator,
   reports,
   centers,
   advisories,
+  checkins,
+  checkinSyncError,
   onSignIn,
   onDemoSignIn,
   onSignOut,
   onModerateReport,
+  onDeleteReport,
   onUpdateCenter,
   onCreateCenter,
+  onDeleteCenter,
   onCreateAdvisory,
   onArchiveAdvisory,
+  onDeleteAdvisory,
+  onDeleteCheckin,
   onRefreshLiveData,
 }: ModeratorConsoleViewProps) {
   const [email, setEmail] = useState('');
@@ -81,6 +97,8 @@ export function ModeratorConsoleView({
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
+  const [checkinSearch, setCheckinSearch] = useState('');
 
   // Shelter edit draft state keyed by center id
   const [editingCenterId, setEditingCenterId] = useState<string | null>(null);
@@ -158,6 +176,7 @@ export function ModeratorConsoleView({
     setIsSaving(true);
     try {
       await task();
+      setConfirmDeleteKey(null);
       showToast(successMessage);
     } catch (err) {
       setActionError(
@@ -166,6 +185,49 @@ export function ModeratorConsoleView({
     } finally {
       setIsSaving(false);
     }
+  }
+
+  function renderDeleteControl(
+    deleteKey: string,
+    onConfirm: () => Promise<void>,
+    successMessage: string,
+    label = 'Delete'
+  ) {
+    if (confirmDeleteKey === deleteKey) {
+      return (
+        <div className="inline-flex items-center gap-1.5">
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={() => void runAction(onConfirm, successMessage)}
+            className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+          >
+            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>Confirm Delete</span>
+          </button>
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={() => setConfirmDeleteKey(null)}
+            className="cursor-pointer rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Cancel
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <button
+        type="button"
+        disabled={isSaving}
+        onClick={() => setConfirmDeleteKey(deleteKey)}
+        className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
+      >
+        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+        <span>{label}</span>
+      </button>
+    );
   }
 
   if (!moderator) {
@@ -268,6 +330,7 @@ export function ModeratorConsoleView({
       ...(hasSpecificAssignment && assignedMuni ? [assignedMuni] : []),
       ...reports.map((r) => r.municipality || 'Quezon City'),
       ...centers.map((c) => c.city),
+      ...checkins.map((c) => c.municipality || 'Quezon City'),
       ...advisories
         .map((a) => a.municipality || '')
         .filter((m) => m && m !== 'All Municipalities'),
@@ -305,6 +368,26 @@ export function ModeratorConsoleView({
             advMuni === effectiveMunicipality.toLowerCase()
           );
         });
+
+  const scopedCheckins = (
+    effectiveMunicipality === 'All'
+      ? checkins
+      : checkins.filter(
+          (c) =>
+            (c.municipality || 'Quezon City').toLowerCase() ===
+            effectiveMunicipality.toLowerCase()
+        )
+  ).filter((c) => {
+    const q = checkinSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      c.full_name.toLowerCase().includes(q) ||
+      c.barangay.toLowerCase().includes(q) ||
+      c.municipality.toLowerCase().includes(q) ||
+      c.status.toLowerCase().includes(q) ||
+      (c.evacuation_center || '').toLowerCase().includes(q)
+    );
+  });
 
   const pendingReports = scopedReports.filter(
     (r) => !r.is_verified && r.status === 'active'
@@ -431,6 +514,19 @@ export function ModeratorConsoleView({
         >
           Official Advisories ({scopedAdvisories.length})
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={consoleTab === 'checkins'}
+          onClick={() => setConsoleTab('checkins')}
+          className={`cursor-pointer rounded-md px-3.5 py-2 text-xs font-semibold transition-colors ${
+            consoleTab === 'checkins'
+              ? 'bg-white text-slate-900 shadow-xs'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          Family Check-Ins ({scopedCheckins.length})
+        </button>
       </div>
 
       {/* TAB 1: REPORT TRIAGE */}
@@ -516,11 +612,15 @@ export function ModeratorConsoleView({
                             'Dismissed report from public feed.'
                           )
                         }
-                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                        className="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
                       >
-                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                        <span>Dismiss</span>
+                        Dismiss
                       </button>
+                      {renderDeleteControl(
+                        `report:${rep.id}`,
+                        () => onDeleteReport(rep.id),
+                        `Permanently deleted report at ${rep.street_or_landmark}.`
+                      )}
                     </div>
                   </div>
                 ))}
@@ -551,7 +651,7 @@ export function ModeratorConsoleView({
                       {rep.category} · {rep.status === 'resolved' ? 'Resolved' : 'Verified Active'}
                     </p>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
                     {rep.status !== 'resolved' && (
                       <button
                         type="button"
@@ -578,6 +678,11 @@ export function ModeratorConsoleView({
                     >
                       Archive
                     </button>
+                    {renderDeleteControl(
+                      `report:${rep.id}`,
+                      () => onDeleteReport(rep.id),
+                      `Permanently deleted report at ${rep.street_or_landmark}.`
+                    )}
                   </div>
                 </div>
               ))}
@@ -867,19 +972,26 @@ export function ModeratorConsoleView({
                       </div>
 
                     {!isEditing && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActionError(null);
-                          setEditingCenterId(center.id);
-                          setDraftStatus(center.status);
-                          setDraftOccupancy(center.current_occupancy);
-                          setDraftNotes(center.notes);
-                        }}
-                        className="cursor-pointer self-start rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50"
-                      >
-                        Update Status & Headcount
-                      </button>
+                      <div className="flex flex-wrap items-center gap-2 self-start">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActionError(null);
+                            setEditingCenterId(center.id);
+                            setDraftStatus(center.status);
+                            setDraftOccupancy(center.current_occupancy);
+                            setDraftNotes(center.notes);
+                          }}
+                          className="cursor-pointer rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                        >
+                          Update Status & Headcount
+                        </button>
+                        {renderDeleteControl(
+                          `center:${center.id}`,
+                          () => onDeleteCenter(center.id),
+                          `Deleted evacuation center ${center.name}.`
+                        )}
+                      </div>
                     )}
                   </div>
 
@@ -1162,19 +1274,135 @@ export function ModeratorConsoleView({
                     </h3>
                     <p className="mt-1 text-xs text-slate-600">{adv.message}</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void runAction(
-                        () => onArchiveAdvisory(adv.id),
-                        'Advisory archived.'
-                      )
-                    }
-                    className="cursor-pointer shrink-0 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                  >
-                    Deactivate
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void runAction(
+                          () => onArchiveAdvisory(adv.id),
+                          'Advisory archived.'
+                        )
+                      }
+                      className="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    >
+                      Deactivate
+                    </button>
+                    {renderDeleteControl(
+                      `advisory:${adv.id}`,
+                      () => onDeleteAdvisory(adv.id),
+                      `Deleted advisory "${adv.title}".`
+                    )}
+                  </div>
                 </article>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: FAMILY CHECK-INS */}
+      {consoleTab === 'checkins' && (
+        <div className="space-y-4">
+          {checkinSyncError && (
+            <div
+              role="alert"
+              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-950"
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle
+                  className="mt-0.5 h-4 w-4 shrink-0 text-amber-700"
+                  aria-hidden="true"
+                />
+                <span>{checkinSyncError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  void runAction(onRefreshLiveData, 'Refreshed live records.')
+                }
+                className="cursor-pointer rounded-md bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+              >
+                Retry Connection
+              </button>
+            </div>
+          )}
+
+          <div className="flex flex-col justify-between gap-3 rounded-lg border border-slate-200 bg-white p-4 sm:flex-row sm:items-center">
+            <div className="flex items-center gap-2">
+              <Users className="h-4 w-4 text-slate-700" aria-hidden="true" />
+              <h2 className="font-display text-sm font-semibold text-slate-900">
+                Family &ldquo;I&rsquo;m Safe&rdquo; Check-Ins ({scopedCheckins.length})
+              </h2>
+            </div>
+
+            <div className="relative w-full sm:w-72">
+              <Search
+                className="pointer-events-none absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+                aria-hidden="true"
+              />
+              <input
+                type="search"
+                value={checkinSearch}
+                onChange={(e) => setCheckinSearch(e.target.value)}
+                placeholder="Filter by name, barangay, shelter..."
+                aria-label="Filter family check-ins"
+                className="w-full rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white">
+            {scopedCheckins.length === 0 ? (
+              <p className="px-5 py-8 text-center text-sm text-slate-500">
+                No family safety check-ins match the current filter.
+              </p>
+            ) : (
+              scopedCheckins.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex flex-col justify-between gap-3 p-4 sm:flex-row sm:items-center"
+                >
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-display text-sm font-semibold text-slate-900">
+                        {item.full_name}
+                      </span>
+                      <span
+                        className={`text-xs font-semibold ${
+                          item.status === 'Needs Contact'
+                            ? 'text-amber-700'
+                            : 'text-emerald-700'
+                        }`}
+                      >
+                        · {item.status}
+                      </span>
+                      <span className="font-mono text-xs text-slate-500">
+                        · {isUuid(item.id) ? 'Live DB' : item.queued_offline ? 'Local Queue' : 'Local Seed'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-600">
+                      {item.barangay}, {item.municipality} · Household of{' '}
+                      <span className="font-mono font-semibold">
+                        {item.household_count}
+                      </span>
+                      {item.evacuation_center ? ` · ${item.evacuation_center}` : ''} ·{' '}
+                      <span className="font-mono tabular-nums">
+                        {formatRelativeTime(item.created_at)}
+                      </span>
+                    </p>
+                    {item.note && (
+                      <p className="text-xs text-slate-700">{item.note}</p>
+                    )}
+                  </div>
+
+                  <div className="shrink-0">
+                    {renderDeleteControl(
+                      `checkin:${item.id}`,
+                      () => onDeleteCheckin(item.id),
+                      `Deleted check-in for ${item.full_name}.`
+                    )}
+                  </div>
+                </div>
               ))
             )}
           </div>

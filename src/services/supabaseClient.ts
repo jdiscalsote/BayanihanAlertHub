@@ -320,11 +320,12 @@ export function subscribeToEmergencyUpdates(handlers: {
   onReportChange: () => void;
   onCenterChange: () => void;
   onAdvisoryChange: () => void;
+  onCheckinChange?: () => void;
 }): () => void {
   const supabase = getSupabaseClient();
   if (!supabase) return () => {};
 
-  const channel: RealtimeChannel = supabase
+  let channel: RealtimeChannel = supabase
     .channel('bayanihan-live-hub')
     .on(
       'postgres_changes',
@@ -340,8 +341,17 @@ export function subscribeToEmergencyUpdates(handlers: {
       'postgres_changes',
       { event: '*', schema: 'public', table: 'advisories' },
       handlers.onAdvisoryChange
-    )
-    .subscribe();
+    );
+
+  if (handlers.onCheckinChange) {
+    channel = channel.on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'safety_checkins' },
+      handlers.onCheckinChange
+    );
+  }
+
+  channel.subscribe();
 
   return () => {
     supabase.removeChannel(channel);
@@ -352,9 +362,37 @@ export function subscribeToEmergencyUpdates(handlers: {
 // FAMILY "I'M SAFE" CHECK-INS (WITH GRACEFUL OFFLINE / SCHEMA FALLBACK)
 // ----------------------------------------------------------------------------
 
-export async function fetchSafetyCheckins(): Promise<SafetyCheckin[] | null> {
+function formatCheckinSupabaseError(err: unknown): string {
+  const raw =
+    err && typeof err === 'object' && 'message' in err
+      ? String((err as { message?: unknown }).message ?? 'Unknown error')
+      : String(err ?? 'Unknown error');
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes('safety_checkins') &&
+    (lower.includes('does not exist') ||
+      lower.includes('schema cache') ||
+      lower.includes('could not find the table'))
+  ) {
+    return 'Table public.safety_checkins was not found in Supabase. Run the updated supabase/schema.sql in your Supabase SQL Editor.';
+  }
+  if (lower.includes('row-level security') || lower.includes('permission denied')) {
+    return `Supabase permission denied (${raw}). Re-run the GRANT and RLS policies in supabase/schema.sql.`;
+  }
+  return raw;
+}
+
+export async function fetchSafetyCheckins(): Promise<{
+  checkins: SafetyCheckin[] | null;
+  error: string | null;
+}> {
   const supabase = getSupabaseClient();
-  if (!supabase) return null;
+  if (!supabase) {
+    return {
+      checkins: null,
+      error: 'Supabase environment variables are not configured in this preview.',
+    };
+  }
 
   const { data, error } = await supabase
     .from('safety_checkins')
@@ -363,23 +401,35 @@ export async function fetchSafetyCheckins(): Promise<SafetyCheckin[] | null> {
     .limit(60);
 
   if (error) {
-    // Gracefully fall back if safety_checkins table hasn't been migrated yet
-    return null;
+    return {
+      checkins: null,
+      error: formatCheckinSupabaseError(error),
+    };
   }
 
   const checkins = (data ?? []) as SafetyCheckin[];
   await saveCachedCheckins(checkins);
-  return checkins;
+  return { checkins, error: null };
 }
 
 export async function submitSafetyCheckin(
   draft: SafetyCheckinDraft,
   isOffline: boolean
-): Promise<{ checkin: SafetyCheckin; queued: boolean }> {
+): Promise<{ checkin: SafetyCheckin; queued: boolean; syncError?: string }> {
   const supabase = getSupabaseClient();
-  if (isOffline || !supabase) {
+  if (isOffline) {
     const queuedItem = await enqueueOfflineCheckin(draft);
     return { checkin: queuedItem, queued: true };
+  }
+
+  if (!supabase) {
+    const queuedItem = await enqueueOfflineCheckin(draft);
+    return {
+      checkin: queuedItem,
+      queued: true,
+      syncError:
+        'Supabase environment variables (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY) are not configured here, so check-ins save locally.',
+    };
   }
 
   try {
@@ -405,34 +455,39 @@ export async function submitSafetyCheckin(
     }
 
     return { checkin: data as SafetyCheckin, queued: false };
-  } catch {
+  } catch (err) {
     const queuedItem = await enqueueOfflineCheckin(draft);
-    return { checkin: queuedItem, queued: true };
+    return {
+      checkin: queuedItem,
+      queued: true,
+      syncError: formatCheckinSupabaseError(err),
+    };
   }
 }
 
 export async function syncPendingCheckins(isOffline: boolean): Promise<{
   synced: SafetyCheckin[];
   remaining: SafetyCheckin[];
+  error: string | null;
 }> {
   const queue = await getPendingCheckinQueue();
   if (queue.length === 0 || isOffline) {
-    return { synced: [], remaining: queue };
+    return { synced: [], remaining: queue, error: null };
   }
 
   const supabase = getSupabaseClient();
   if (!supabase) {
-    const promoted = queue.map((item) => ({
-      ...item,
-      id: `local-${item.id}`,
-      queued_offline: false,
-    }));
-    await replacePendingCheckinQueue([]);
-    return { synced: promoted, remaining: [] };
+    return {
+      synced: [],
+      remaining: queue,
+      error:
+        'Supabase environment variables are not configured here; check-ins remain in the local queue.',
+    };
   }
 
   const synced: SafetyCheckin[] = [];
   const remaining: SafetyCheckin[] = [];
+  let lastError: string | null = null;
 
   for (const item of queue) {
     try {
@@ -451,17 +506,19 @@ export async function syncPendingCheckins(isOffline: boolean): Promise<{
         .single();
 
       if (error || !data) {
+        lastError = formatCheckinSupabaseError(error ?? 'Insert failed');
         remaining.push(item);
       } else {
         synced.push(data as SafetyCheckin);
       }
-    } catch {
+    } catch (err) {
+      lastError = formatCheckinSupabaseError(err);
       remaining.push(item);
     }
   }
 
   await replacePendingCheckinQueue(remaining);
-  return { synced, remaining };
+  return { synced, remaining, error: lastError };
 }
 
 // ----------------------------------------------------------------------------
@@ -749,6 +806,82 @@ export async function archiveOfficialAdvisory(advisoryId: string): Promise<void>
   if (!data) {
     throw new Error(
       'Database update affected 0 rows. Confirm your user has a moderator_profiles row and UPDATE permissions.'
+    );
+  }
+}
+
+export async function deleteHazardReport(reportId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  if (!supabase || !isUuid(reportId)) return;
+
+  const { data, error } = await supabase
+    .from('hazard_reports')
+    .delete()
+    .eq('id', reportId)
+    .select('id')
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  if (!data) {
+    throw new Error(
+      'Database delete affected 0 rows. Confirm your moderator account has DELETE permissions for this municipality.'
+    );
+  }
+}
+
+export async function deleteEvacuationCenter(centerId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  if (!supabase || !isUuid(centerId)) return;
+
+  const { data, error } = await supabase
+    .from('evacuation_centers')
+    .delete()
+    .eq('id', centerId)
+    .select('id')
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  if (!data) {
+    throw new Error(
+      'Database delete affected 0 rows. Confirm your moderator account has DELETE permissions for this municipality.'
+    );
+  }
+}
+
+export async function deleteOfficialAdvisory(advisoryId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  if (!supabase || !isUuid(advisoryId)) return;
+
+  const { data, error } = await supabase
+    .from('advisories')
+    .delete()
+    .eq('id', advisoryId)
+    .select('id')
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  if (!data) {
+    throw new Error(
+      'Database delete affected 0 rows. Confirm your moderator account has DELETE permissions for this municipality.'
+    );
+  }
+}
+
+export async function deleteSafetyCheckin(checkinId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  if (!supabase || !isUuid(checkinId)) return;
+
+  const { data, error } = await supabase
+    .from('safety_checkins')
+    .delete()
+    .eq('id', checkinId)
+    .select('id')
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  if (!data) {
+    throw new Error(
+      'Database delete affected 0 rows. Confirm your moderator account has DELETE permissions for this municipality.'
     );
   }
 }
