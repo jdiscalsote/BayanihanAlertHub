@@ -146,13 +146,6 @@ export interface GroundedSourceLink {
   url: string;
 }
 
-export interface OfficialBulletinResult {
-  locationLabel: string;
-  summary: string;
-  sources: GroundedSourceLink[];
-  fetchedAt: string;
-}
-
 export interface AssistantMessage {
   id: string;
   role: 'user' | 'assistant';

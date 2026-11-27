@@ -19,7 +19,6 @@ import {
 } from 'lucide-react';
 import { EMERGENCY_HOTLINES } from '../data/seedData';
 import { EmergencyMapView } from './EmergencyMapView';
-import { OfficialBulletinsPanel } from './OfficialBulletinsPanel';
 import type {
   EvacuationCenter,
   FeedFilter,
@@ -243,12 +242,6 @@ export function LiveFeedView({
           </div>
         </div>
       </div>
-
-      {/* Official Weather & LGU Bulletins (Gemini + Google Search Grounding) */}
-      <OfficialBulletinsPanel
-        selectedMunicipality={selectedMunicipality}
-        isOffline={isOffline}
-      />
 
       {/* Workspace Toolbar: Search, Filter Tabs, Connectivity & Sync Controls */}
       <div className="space-y-3 rounded-lg border border-slate-200 bg-white p-4">

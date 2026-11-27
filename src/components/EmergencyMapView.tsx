@@ -26,6 +26,7 @@ import type {
   NearbySafePlace,
 } from '../types/alert';
 import { buildSafeGoogleMapsUrl, formatRelativeTime } from '../utils/formatters';
+import { requestBestEffortGeolocation } from '../utils/geolocation';
 
 const MAPS_API_KEY = (
   (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined) || ''
@@ -347,14 +348,46 @@ function NearbyPlacesController({
 
 function MapViewportController({
   focusPoint,
+  centers,
+  selectedMunicipality,
+  hasActiveRoute,
 }: {
   focusPoint: { lat: number; lng: number } | null;
+  centers: EvacuationCenter[];
+  selectedMunicipality?: string;
+  hasActiveRoute: boolean;
 }) {
   const map = useMap();
+  const coreLib = useMapsLibrary('core');
+  const lastMuniRef = useRef<string | undefined>(undefined);
+
   useEffect(() => {
     if (!map || !focusPoint) return;
     map.panTo(focusPoint);
   }, [map, focusPoint]);
+
+  useEffect(() => {
+    if (!map || !coreLib || hasActiveRoute || centers.length === 0) return;
+    if (lastMuniRef.current === selectedMunicipality) return;
+    lastMuniRef.current = selectedMunicipality;
+
+    if (centers.length === 1) {
+      map.panTo({ lat: centers[0].latitude, lng: centers[0].longitude });
+      map.setZoom(14);
+      return;
+    }
+
+    const bounds = new coreLib.LatLngBounds();
+    for (const c of centers) {
+      if (Number.isFinite(c.latitude) && Number.isFinite(c.longitude)) {
+        bounds.extend({ lat: c.latitude, lng: c.longitude });
+      }
+    }
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds, 48);
+    }
+  }, [map, coreLib, centers, selectedMunicipality, hasActiveRoute]);
+
   return null;
 }
 
@@ -371,6 +404,8 @@ export function EmergencyMapView({
   const [showNearbySupport, setShowNearbySupport] = useState(true);
 
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [userLocationIsManual, setUserLocationIsManual] = useState(false);
+  const [isPickingOrigin, setIsPickingOrigin] = useState(false);
   const [locating, setLocating] = useState(false);
   const [locationNotice, setLocationNotice] = useState<string | null>(null);
 
@@ -453,39 +488,59 @@ export function EmergencyMapView({
   }, [selectedMunicipality, centers]);
 
   const requestUserLocation = useCallback(
-    (onResolved?: (coords: { lat: number; lng: number }, usedGps: boolean) => void) => {
-      if (!navigator.geolocation) {
-        setLocationNotice(
-          `Browser GPS unavailable. Using ${fallbackAreaOrigin.label} as starting reference.`
-        );
-        onResolved?.(fallbackAreaOrigin.point, false);
+    async (
+      onResolved?: (
+        coords: { lat: number; lng: number },
+        usedGps: boolean
+      ) => void
+    ) => {
+      setLocating(true);
+      setLocationNotice(null);
+      setIsPickingOrigin(false);
+
+      const result = await requestBestEffortGeolocation();
+      setLocating(false);
+
+      if (result.ok) {
+        setUserLocation(result.coords);
+        setUserLocationIsManual(false);
+        setFocusPoint(result.coords);
+        if (!result.highAccuracy) {
+          setLocationNotice(
+            'Using network-approximated location. Tap "Pick Start on Map" anytime to adjust your exact spot.'
+          );
+        }
+        onResolved?.(result.coords, true);
         return;
       }
 
-      setLocating(true);
-      setLocationNotice(null);
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const coords = {
-            lat: pos.coords.latitude,
-            lng: pos.coords.longitude,
-          };
-          setLocating(false);
-          setUserLocation(coords);
-          setFocusPoint(coords);
-          onResolved?.(coords, true);
-        },
-        () => {
-          setLocating(false);
-          setLocationNotice(
-            `Location permission unavailable — routing from ${fallbackAreaOrigin.label} instead.`
-          );
-          onResolved?.(fallbackAreaOrigin.point, false);
-        },
-        { enableHighAccuracy: true, timeout: 7000 }
+      const reasonHint =
+        result.reason === 'denied'
+          ? 'Location access is blocked by your browser or embedded preview frame.'
+          : result.message;
+
+      setLocationNotice(
+        `${reasonHint} Tap "Pick Start on Map" to set your starting pin anywhere in the Philippines${onResolved ? `, or routing from ${fallbackAreaOrigin.label} for now.` : '.'}`
       );
+      onResolved?.(fallbackAreaOrigin.point, false);
     },
     [fallbackAreaOrigin]
+  );
+
+  const handleManualOriginDrop = useCallback(
+    (coords: { lat: number; lng: number }) => {
+      setUserLocation(coords);
+      setUserLocationIsManual(true);
+      setIsPickingOrigin(false);
+      setLocationNotice(
+        `Starting pin placed at ${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}.`
+      );
+      if (routeDestination) {
+        setRouteOrigin(coords);
+        setRouteOriginLabel('Selected map pin');
+      }
+    },
+    [routeDestination]
   );
 
   const startSafeRouteToCenter = useCallback(
@@ -496,16 +551,18 @@ export function EmergencyMapView({
 
       if (userLocation) {
         setRouteOrigin(userLocation);
-        setRouteOriginLabel('Your GPS location');
+        setRouteOriginLabel(
+          userLocationIsManual ? 'Selected map pin' : 'Your GPS location'
+        );
         return;
       }
 
-      requestUserLocation((coords, usedGps) => {
+      void requestUserLocation((coords, usedGps) => {
         setRouteOrigin(coords);
         setRouteOriginLabel(usedGps ? 'Your GPS location' : fallbackAreaOrigin.label);
       });
     },
-    [userLocation, requestUserLocation, fallbackAreaOrigin.label]
+    [userLocation, userLocationIsManual, requestUserLocation, fallbackAreaOrigin.label]
   );
 
   useEffect(() => {
@@ -633,7 +690,7 @@ export function EmergencyMapView({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => requestUserLocation()}
+            onClick={() => void requestUserLocation()}
             disabled={locating}
             className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-60"
           >
@@ -641,9 +698,27 @@ export function EmergencyMapView({
             <span>
               {locating
                 ? 'Locating...'
-                : userLocation
+                : userLocation && !userLocationIsManual
                   ? 'Update My GPS'
                   : 'Use My Location'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setIsPickingOrigin((prev) => !prev);
+              setSelection(null);
+            }}
+            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+              isPickingOrigin
+                ? 'border-sky-600 bg-sky-50 text-sky-900'
+                : 'border-slate-300 bg-white text-slate-800 hover:bg-slate-50'
+            }`}
+          >
+            <MapPin className="h-3.5 w-3.5 text-sky-700" aria-hidden="true" />
+            <span>
+              {isPickingOrigin ? 'Tap Map to Set Start...' : 'Pick Start on Map'}
             </span>
           </button>
 
@@ -663,7 +738,13 @@ export function EmergencyMapView({
         </div>
       </div>
 
-      {locationNotice && (
+      {isPickingOrigin && (
+        <p className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-900">
+          Tap anywhere on the map below to set your starting location pin for nationwide shelter routing.
+        </p>
+      )}
+
+      {locationNotice && !isPickingOrigin && (
         <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
           {locationNotice}
         </p>
@@ -684,10 +765,22 @@ export function EmergencyMapView({
                 mapId="DEMO_MAP_ID"
                 gestureHandling="greedy"
                 internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-                onClick={() => setSelection(null)}
+                onClick={(ev) => {
+                  const latLng = ev.detail.latLng;
+                  if (isPickingOrigin && latLng) {
+                    handleManualOriginDrop({ lat: latLng.lat, lng: latLng.lng });
+                    return;
+                  }
+                  setSelection(null);
+                }}
                 style={{ width: '100%', height: '100%' }}
               >
-                <MapViewportController focusPoint={focusPoint} />
+                <MapViewportController
+                  focusPoint={focusPoint}
+                  centers={centers}
+                  selectedMunicipality={selectedMunicipality}
+                  hasActiveRoute={Boolean(routeDestination)}
+                />
 
                 <RouteOverlayController
                   origin={routeOrigin}

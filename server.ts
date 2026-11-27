@@ -9,7 +9,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   handleAssistantChat,
-  handleBulletins,
   handleHealth,
   handleReverseGeocode,
 } from './server/apiHandlers';
@@ -41,13 +40,7 @@ async function startServer() {
     res.status(result.status).json(result.body);
   });
 
-  // 1. Official Weather & LGU Bulletins via Gemini + Google Search Grounding
-  app.post('/api/bulletins', async (req: Request, res: Response) => {
-    const result = await handleBulletins(req.body);
-    res.status(result.status).json(result.body);
-  });
-
-  // 2. Context-Aware Bayanihan Assistant Chat (Supabase + Google Search Grounding)
+  // 1. Context-Aware Bayanihan Assistant Chat (Supabase + Google Search Grounding)
   app.post('/api/assistant/chat', async (req: Request, res: Response) => {
     const result = await handleAssistantChat(req.body);
     res.status(result.status).json(result.body);

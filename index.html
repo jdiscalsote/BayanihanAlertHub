@@ -3,19 +3,69 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Bayanihan Alert Hub — Typhoon, Flood & Evacuation Tracker</title>
-    <meta name="description" content="Community typhoon, flood, and evacuation tracker for Philippine barangays with offline resilience and responder verification." />
-    <meta property="og:title" content="Bayanihan Alert Hub — Typhoon, Flood & Evacuation Tracker" />
-    <meta property="og:description" content="Community typhoon, flood, and evacuation tracker for Philippine barangays with offline resilience and responder verification." />
+    <title>Bayanihan Alert Hub — PH Flood &amp; Evacuation Tracker</title>
+    <meta
+      name="description"
+      content="Track nationwide Philippine typhoon alerts, flooded roads, and live evacuation shelter capacity with interactive routing and offline readiness."
+    />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#0f172a" />
+
+    <!-- OpenGraph -->
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Bayanihan Alert Hub" />
+    <meta property="og:locale" content="en_PH" />
+    <meta
+      property="og:title"
+      content="Bayanihan Alert Hub — PH Flood &amp; Evacuation Tracker"
+    />
+    <meta
+      property="og:description"
+      content="Track nationwide Philippine typhoon alerts, flooded roads, and live evacuation shelter capacity with interactive routing and offline readiness."
+    />
+
+    <!-- Twitter / X Cards -->
     <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="Bayanihan Alert Hub — PH Flood &amp; Evacuation Tracker"
+    />
+    <meta
+      name="twitter:description"
+      content="Track nationwide Philippine typhoon alerts, flooded roads, and live evacuation shelter capacity with interactive routing and offline readiness."
+    />
+
+    <!-- Schema.org Structured Data -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Bayanihan Alert Hub",
+        "applicationCategory": "UtilitiesApplication",
+        "operatingSystem": "All",
+        "inLanguage": ["en", "tl"],
+        "areaServed": {
+          "@type": "Country",
+          "name": "Philippines"
+        },
+        "description": "Track nationwide Philippine typhoon alerts, flooded roads, and live evacuation shelter capacity with interactive routing and offline readiness.",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "PHP"
+        }
+      }
+    </script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@600;700&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@600;700&family=Public+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body class="bg-slate-50 text-slate-900 antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

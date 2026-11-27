@@ -18,6 +18,7 @@ import type {
   ReverseGeocodeResult,
 } from '../types/alert';
 import { ApiClientError, safeFetchJson } from '../utils/apiClient';
+import { requestBestEffortGeolocation } from '../utils/geolocation';
 import { LocationSelector } from './LocationSelector';
 
 const MAPS_API_KEY = (
@@ -132,26 +133,23 @@ export function QuickReportModal({
     }
   }
 
-  function handleUseCurrentGps() {
-    if (!navigator.geolocation) {
-      setError('Geolocation is not supported on this browser.');
+  async function handleUseCurrentGps() {
+    setGeocoding(true);
+    setGeocodeNote('Detecting your device location...');
+    const result = await requestBestEffortGeolocation();
+
+    if (result.ok) {
+      setShowMapPicker(true);
+      await reverseGeocodeCoordinates(result.coords.lat, result.coords.lng);
       return;
     }
-    setGeocoding(true);
-    setGeocodeNote('Detecting your GPS location...');
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setShowMapPicker(true);
-        void reverseGeocodeCoordinates(pos.coords.latitude, pos.coords.longitude);
-      },
-      () => {
-        setGeocoding(false);
-        setGeocodeNote(
-          'Unable to access GPS. Tap the map below to drop a pin manually.'
-        );
-        setShowMapPicker(true);
-      },
-      { enableHighAccuracy: true, timeout: 7000 }
+
+    setGeocoding(false);
+    setShowMapPicker(true);
+    setGeocodeNote(
+      result.reason === 'denied'
+        ? 'Location access was blocked by your browser or preview frame. Tap anywhere on the map below to drop your pin manually.'
+        : `${result.message} Tap anywhere on the map below to drop your pin manually.`
     );
   }
 
