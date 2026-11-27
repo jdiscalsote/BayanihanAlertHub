@@ -39,6 +39,7 @@ interface LiveFeedViewProps {
   searchQuery: string;
   confirmedIds: Set<string>;
   isOffline: boolean;
+  batterySaver?: boolean;
   simulatedOffline: boolean;
   isSyncing: boolean;
   isRefreshing: boolean;
@@ -121,6 +122,7 @@ export function LiveFeedView({
   searchQuery,
   confirmedIds,
   isOffline,
+  batterySaver = false,
   simulatedOffline,
   isSyncing,
   isRefreshing,
@@ -488,6 +490,7 @@ export function LiveFeedView({
           centers={filteredCenters}
           reports={filteredReports}
           isOffline={isOffline}
+          batterySaver={batterySaver}
           selectedMunicipality={selectedMunicipality}
         />
       ) : filteredReports.length === 0 ? (

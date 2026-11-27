@@ -32,3 +32,11 @@ export function buildSafeTelHref(phone: string): string {
   const cleaned = phone.replace(/[^\d+]/g, '');
   return cleaned ? `tel:${cleaned}` : '#';
 }
+
+export function buildSafeSmsHref(phone: string, body: string): string {
+  const cleaned = phone.replace(/[^\d+]/g, '');
+  const encodedBody = encodeURIComponent(body.slice(0, 600));
+  return cleaned
+    ? `sms:${cleaned}?body=${encodedBody}`
+    : `sms:?body=${encodedBody}`;
+}

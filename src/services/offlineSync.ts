@@ -2,12 +2,15 @@ import {
   SEED_ADVISORIES,
   SEED_EVACUATION_CENTERS,
   SEED_HAZARD_REPORTS,
+  SEED_SAFETY_CHECKINS,
 } from '../data/seedData';
 import type {
   Advisory,
   EvacuationCenter,
   HazardReport,
   ReportDraft,
+  SafetyCheckin,
+  SafetyCheckinDraft,
 } from '../types/alert';
 
 const DB_NAME = 'bayanihan_alert_hub_db';
@@ -18,7 +21,9 @@ const KEYS = {
   REPORTS: 'cached_hazard_reports',
   CENTERS: 'cached_evacuation_centers',
   ADVISORIES: 'cached_advisories',
+  CHECKINS: 'cached_safety_checkins',
   QUEUE: 'pending_offline_queue',
+  CHECKIN_QUEUE: 'pending_checkin_queue',
   CONFIRMED_IDS: 'confirmed_report_ids',
   LAST_SUBMIT_AT: 'last_report_submit_at',
   LAST_SYNCED_AT: 'last_synced_at',
@@ -165,6 +170,57 @@ export async function enqueueOfflineReport(draft: ReportDraft): Promise<HazardRe
   const updated = [queuedItem, ...current];
   await idbSet(KEYS.QUEUE, updated);
   return queuedItem;
+}
+
+export async function loadCachedCheckins(): Promise<{
+  checkins: SafetyCheckin[];
+  queue: SafetyCheckin[];
+}> {
+  const [checkins, queue] = await Promise.all([
+    idbGet<SafetyCheckin[]>(KEYS.CHECKINS),
+    idbGet<SafetyCheckin[]>(KEYS.CHECKIN_QUEUE),
+  ]);
+  return {
+    checkins:
+      checkins && checkins.length > 0 ? checkins : SEED_SAFETY_CHECKINS,
+    queue: queue ?? [],
+  };
+}
+
+export async function saveCachedCheckins(
+  checkins: SafetyCheckin[]
+): Promise<void> {
+  await idbSet(KEYS.CHECKINS, checkins.slice(0, 80));
+}
+
+export async function getPendingCheckinQueue(): Promise<SafetyCheckin[]> {
+  return (await idbGet<SafetyCheckin[]>(KEYS.CHECKIN_QUEUE)) ?? [];
+}
+
+export async function enqueueOfflineCheckin(
+  draft: SafetyCheckinDraft
+): Promise<SafetyCheckin> {
+  const item: SafetyCheckin = {
+    id: `offline-chk-${crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)}`,
+    full_name: draft.full_name.trim(),
+    status: draft.status,
+    municipality: draft.municipality.trim() || 'Quezon City',
+    barangay: draft.barangay.trim(),
+    evacuation_center: draft.evacuation_center?.trim() || null,
+    household_count: Math.max(1, Math.min(50, Math.round(draft.household_count || 1))),
+    note: draft.note.trim(),
+    created_at: new Date().toISOString(),
+    queued_offline: true,
+  };
+  const current = await getPendingCheckinQueue();
+  await idbSet(KEYS.CHECKIN_QUEUE, [item, ...current]);
+  return item;
+}
+
+export async function replacePendingCheckinQueue(
+  queue: SafetyCheckin[]
+): Promise<void> {
+  await idbSet(KEYS.CHECKIN_QUEUE, queue);
 }
 
 export async function replacePendingQueue(queue: HazardReport[]): Promise<void> {

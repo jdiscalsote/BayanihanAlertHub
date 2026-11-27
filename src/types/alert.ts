@@ -19,7 +19,7 @@ export type EvacuationStatus = 'Open' | 'Near Full' | 'Full' | 'Closed';
 
 export type AdvisorySeverity = 'Advisory' | 'Warning' | 'Critical';
 
-export type ActiveTab = 'feed' | 'evacuation' | 'hotlines' | 'moderator';
+export type ActiveTab = 'feed' | 'evacuation' | 'safety' | 'hotlines' | 'moderator';
 
 export type FeedFilter = 'All' | HazardCategory | 'Verified Only';
 
@@ -132,13 +132,45 @@ export interface ModeratorProfile {
   email?: string;
 }
 
+export type HotlineCategory = 'National' | 'Local LGU' | 'Utility & Weather';
+
 export interface EmergencyHotline {
   id: string;
   agency: string;
   shortLabel: string;
   number: string;
   coverage: string;
+  category: HotlineCategory;
+  municipality?: string;
   description: string;
+}
+
+export type SafetyCheckinStatus =
+  | 'Evacuated to Shelter'
+  | 'Safe at Home'
+  | 'Needs Contact';
+
+export interface SafetyCheckin {
+  id: string;
+  full_name: string;
+  status: SafetyCheckinStatus;
+  municipality: string;
+  barangay: string;
+  evacuation_center?: string | null;
+  household_count: number;
+  note: string;
+  created_at: string;
+  queued_offline?: boolean;
+}
+
+export interface SafetyCheckinDraft {
+  full_name: string;
+  status: SafetyCheckinStatus;
+  municipality: string;
+  barangay: string;
+  evacuation_center?: string;
+  household_count: number;
+  note: string;
 }
 
 export interface GroundedSourceLink {

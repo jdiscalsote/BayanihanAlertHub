@@ -22,3 +22,54 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Battery-Saver / Low-Power Dark Mode for Brownouts */
+.battery-saver,
+.battery-saver body {
+  background-color: #090d16;
+  color: #e2e8f0;
+}
+
+.battery-saver *,
+.battery-saver *::before,
+.battery-saver *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+
+.battery-saver .bg-white,
+.battery-saver .bg-white\/95 {
+  background-color: #0f172a !important;
+}
+
+.battery-saver .bg-slate-50,
+.battery-saver .bg-slate-50\/70,
+.battery-saver .bg-slate-100 {
+  background-color: #111c33 !important;
+}
+
+.battery-saver .border-slate-100,
+.battery-saver .border-slate-200,
+.battery-saver .border-slate-300,
+.battery-saver .divide-slate-200 {
+  border-color: #1e293b !important;
+}
+
+.battery-saver .text-slate-900,
+.battery-saver .text-slate-800 {
+  color: #f1f5f9 !important;
+}
+
+.battery-saver .text-slate-700,
+.battery-saver .text-slate-600,
+.battery-saver .text-slate-500 {
+  color: #94a3b8 !important;
+}
+
+.battery-saver input,
+.battery-saver select,
+.battery-saver textarea {
+  background-color: #090d16 !important;
+  color: #f1f5f9 !important;
+  border-color: #334155 !important;
+}

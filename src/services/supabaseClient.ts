@@ -9,13 +9,19 @@ import type {
   NewEvacuationCenterDraft,
   ReportDraft,
   ReportStatus,
+  SafetyCheckin,
+  SafetyCheckinDraft,
 } from '../types/alert';
 import {
+  enqueueOfflineCheckin,
   enqueueOfflineReport,
+  getPendingCheckinQueue,
   getPendingQueue,
+  replacePendingCheckinQueue,
   replacePendingQueue,
   saveCachedAdvisories,
   saveCachedCenters,
+  saveCachedCheckins,
   saveCachedReports,
   saveLastSyncedAt,
 } from './offlineSync';
@@ -340,6 +346,122 @@ export function subscribeToEmergencyUpdates(handlers: {
   return () => {
     supabase.removeChannel(channel);
   };
+}
+
+// ----------------------------------------------------------------------------
+// FAMILY "I'M SAFE" CHECK-INS (WITH GRACEFUL OFFLINE / SCHEMA FALLBACK)
+// ----------------------------------------------------------------------------
+
+export async function fetchSafetyCheckins(): Promise<SafetyCheckin[] | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from('safety_checkins')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(60);
+
+  if (error) {
+    // Gracefully fall back if safety_checkins table hasn't been migrated yet
+    return null;
+  }
+
+  const checkins = (data ?? []) as SafetyCheckin[];
+  await saveCachedCheckins(checkins);
+  return checkins;
+}
+
+export async function submitSafetyCheckin(
+  draft: SafetyCheckinDraft,
+  isOffline: boolean
+): Promise<{ checkin: SafetyCheckin; queued: boolean }> {
+  const supabase = getSupabaseClient();
+  if (isOffline || !supabase) {
+    const queuedItem = await enqueueOfflineCheckin(draft);
+    return { checkin: queuedItem, queued: true };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('safety_checkins')
+      .insert({
+        full_name: draft.full_name.trim(),
+        status: draft.status,
+        municipality: draft.municipality.trim() || 'Quezon City',
+        barangay: draft.barangay.trim(),
+        evacuation_center: draft.evacuation_center?.trim() || null,
+        household_count: Math.max(
+          1,
+          Math.min(50, Math.round(draft.household_count || 1))
+        ),
+        note: draft.note.trim(),
+      })
+      .select()
+      .single();
+
+    if (error || !data) {
+      throw error ?? new Error('Insert failed');
+    }
+
+    return { checkin: data as SafetyCheckin, queued: false };
+  } catch {
+    const queuedItem = await enqueueOfflineCheckin(draft);
+    return { checkin: queuedItem, queued: true };
+  }
+}
+
+export async function syncPendingCheckins(isOffline: boolean): Promise<{
+  synced: SafetyCheckin[];
+  remaining: SafetyCheckin[];
+}> {
+  const queue = await getPendingCheckinQueue();
+  if (queue.length === 0 || isOffline) {
+    return { synced: [], remaining: queue };
+  }
+
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    const promoted = queue.map((item) => ({
+      ...item,
+      id: `local-${item.id}`,
+      queued_offline: false,
+    }));
+    await replacePendingCheckinQueue([]);
+    return { synced: promoted, remaining: [] };
+  }
+
+  const synced: SafetyCheckin[] = [];
+  const remaining: SafetyCheckin[] = [];
+
+  for (const item of queue) {
+    try {
+      const { data, error } = await supabase
+        .from('safety_checkins')
+        .insert({
+          full_name: item.full_name,
+          status: item.status,
+          municipality: item.municipality,
+          barangay: item.barangay,
+          evacuation_center: item.evacuation_center ?? null,
+          household_count: item.household_count,
+          note: item.note,
+        })
+        .select()
+        .single();
+
+      if (error || !data) {
+        remaining.push(item);
+      } else {
+        synced.push(data as SafetyCheckin);
+      }
+    } catch {
+      remaining.push(item);
+    }
+  }
+
+  await replacePendingCheckinQueue(remaining);
+  return { synced, remaining };
 }
 
 // ----------------------------------------------------------------------------

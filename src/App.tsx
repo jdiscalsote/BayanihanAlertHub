@@ -6,18 +6,22 @@ import { HotlinesView } from './components/HotlinesView';
 import { LiveFeedView } from './components/LiveFeedView';
 import { ModeratorConsoleView } from './components/ModeratorConsoleView';
 import { QuickReportModal } from './components/QuickReportModal';
+import { SafetyToolsView } from './components/SafetyToolsView';
 import { TopBar } from './components/TopBar';
 import {
   SEED_ADVISORIES,
   SEED_EVACUATION_CENTERS,
   SEED_HAZARD_REPORTS,
+  SEED_SAFETY_CHECKINS,
 } from './data/seedData';
 import {
   getConfirmedReportIds,
+  loadCachedCheckins,
   loadCachedSnapshot,
   markReportConfirmedLocally,
   saveCachedAdvisories,
   saveCachedCenters,
+  saveCachedCheckins,
   saveCachedReports,
 } from './services/offlineSync';
 import {
@@ -26,6 +30,7 @@ import {
   createEvacuationCenter,
   createOfficialAdvisory,
   fetchAllLiveData,
+  fetchSafetyCheckins,
   getActiveModeratorSession,
   isSupabaseConfigured,
   isUuid,
@@ -33,7 +38,9 @@ import {
   signInModerator,
   signOutModerator,
   submitHazardReport,
+  submitSafetyCheckin,
   subscribeToEmergencyUpdates,
+  syncPendingCheckins,
   syncPendingReports,
   updateEvacuationCenterStatus,
 } from './services/supabaseClient';
@@ -49,18 +56,31 @@ import type {
   NewEvacuationCenterDraft,
   ReportDraft,
   ReportStatus,
+  SafetyCheckin,
+  SafetyCheckinDraft,
 } from './types/alert';
+
+const BATTERY_SAVER_KEY = 'bayanihan:battery_saver_v1';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('feed');
   const [filter, setFilter] = useState<FeedFilter>('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [batterySaver, setBatterySaver] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(BATTERY_SAVER_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
 
   const [reports, setReports] = useState<HazardReport[]>(SEED_HAZARD_REPORTS);
   const [queuedReports, setQueuedReports] = useState<HazardReport[]>([]);
   const [centers, setCenters] = useState<EvacuationCenter[]>(SEED_EVACUATION_CENTERS);
   const [advisories, setAdvisories] = useState<Advisory[]>(SEED_ADVISORIES);
+  const [checkins, setCheckins] = useState<SafetyCheckin[]>(SEED_SAFETY_CHECKINS);
+  const [queuedCheckins, setQueuedCheckins] = useState<SafetyCheckin[]>([]);
   const [confirmedIds, setConfirmedIds] = useState<Set<string>>(() =>
     getConfirmedReportIds()
   );
@@ -113,17 +133,32 @@ export default function App() {
     }, 4000);
   }, []);
 
+  useEffect(() => {
+    document.documentElement.classList.toggle('battery-saver', batterySaver);
+    try {
+      localStorage.setItem(BATTERY_SAVER_KEY, String(batterySaver));
+    } catch {
+      // Ignore storage error
+    }
+  }, [batterySaver]);
+
   const refreshFromRemote = useCallback(async () => {
     if (isOffline || !isSupabaseConfigured) return;
     setIsRefreshing(true);
     try {
-      const bundle = await fetchAllLiveData();
+      const [bundle, liveCheckins] = await Promise.all([
+        fetchAllLiveData(),
+        fetchSafetyCheckins(),
+      ]);
       if (bundle) {
         setReports(bundle.reports);
         setCenters(bundle.centers);
         setAdvisories(bundle.advisories);
         setLastSyncedAt(bundle.syncedAt);
         setLastSyncError(null);
+      }
+      if (liveCheckins) {
+        setCheckins(liveCheckins);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'network error';
@@ -138,16 +173,31 @@ export default function App() {
     if (isOffline) return;
     setIsSyncing(true);
     try {
-      const { synced, remaining } = await syncPendingReports(isOffline);
-      setQueuedReports(remaining);
-      if (synced.length > 0) {
+      const [reportRes, checkinRes] = await Promise.all([
+        syncPendingReports(isOffline),
+        syncPendingCheckins(isOffline),
+      ]);
+      setQueuedReports(reportRes.remaining);
+      setQueuedCheckins(checkinRes.remaining);
+
+      if (reportRes.synced.length > 0) {
         setReports((prev) => {
-          const updated = [...synced, ...prev];
+          const updated = [...reportRes.synced, ...prev];
           void saveCachedReports(updated);
           return updated;
         });
+      }
+      if (checkinRes.synced.length > 0) {
+        setCheckins((prev) => {
+          const updated = [...checkinRes.synced, ...prev];
+          void saveCachedCheckins(updated);
+          return updated;
+        });
+      }
+      const totalSynced = reportRes.synced.length + checkinRes.synced.length;
+      if (totalSynced > 0) {
         notify(
-          `Synced ${synced.length} queued ${synced.length === 1 ? 'report' : 'reports'} to the live feed.`
+          `Synced ${totalSynced} queued ${totalSynced === 1 ? 'update' : 'updates'} to the live hub.`
         );
       }
     } finally {
@@ -159,12 +209,17 @@ export default function App() {
   useEffect(() => {
     let active = true;
     (async () => {
-      const cached = await loadCachedSnapshot();
+      const [cached, cachedCheckins] = await Promise.all([
+        loadCachedSnapshot(),
+        loadCachedCheckins(),
+      ]);
       if (!active) return;
       setReports(cached.reports);
       setCenters(cached.centers);
       setAdvisories(cached.advisories);
       setQueuedReports(cached.queue);
+      setCheckins(cachedCheckins.checkins);
+      setQueuedCheckins(cachedCheckins.queue);
       setLastSyncedAt(cached.lastSyncedAt ?? new Date().toISOString());
 
       if (isSupabaseConfigured && !isOffline) {
@@ -196,24 +251,24 @@ export default function App() {
 
   // Auto-sync pending queue whenever connectivity returns
   useEffect(() => {
-    if (!isOffline && queuedReports.length > 0) {
+    if (!isOffline && (queuedReports.length > 0 || queuedCheckins.length > 0)) {
       void handleSyncQueue();
     }
-  }, [isOffline, queuedReports.length, handleSyncQueue]);
+  }, [isOffline, queuedReports.length, queuedCheckins.length, handleSyncQueue]);
 
-  // Selective Supabase Realtime subscription (free-tier friendly)
+  // Selective Supabase Realtime subscription (paused in Battery Saver mode)
   useEffect(() => {
-    if (isOffline || !isSupabaseConfigured) return;
+    if (isOffline || batterySaver || !isSupabaseConfigured) return;
     return subscribeToEmergencyUpdates({
       onReportChange: () => void refreshFromRemote(),
       onCenterChange: () => void refreshFromRemote(),
       onAdvisoryChange: () => void refreshFromRemote(),
     });
-  }, [isOffline, refreshFromRemote]);
+  }, [isOffline, batterySaver, refreshFromRemote]);
 
-  // Refresh when returning to the browser tab or switching primary views
+  // Refresh when returning to the browser tab (paused in Battery Saver mode)
   useEffect(() => {
-    if (isOffline || !isSupabaseConfigured) return;
+    if (isOffline || batterySaver || !isSupabaseConfigured) return;
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
         void refreshFromRemote();
@@ -225,14 +280,35 @@ export default function App() {
       window.removeEventListener('focus', handleVisibilityOrFocus);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
     };
-  }, [isOffline, refreshFromRemote]);
+  }, [isOffline, batterySaver, refreshFromRemote]);
 
   useEffect(() => {
-    if (isOffline || !isSupabaseConfigured) return;
-    if (activeTab === 'feed' || activeTab === 'evacuation' || activeTab === 'moderator') {
+    if (isOffline || batterySaver || !isSupabaseConfigured) return;
+    if (
+      activeTab === 'feed' ||
+      activeTab === 'evacuation' ||
+      activeTab === 'safety' ||
+      activeTab === 'moderator'
+    ) {
       void refreshFromRemote();
     }
-  }, [activeTab, isOffline, refreshFromRemote]);
+  }, [activeTab, isOffline, batterySaver, refreshFromRemote]);
+
+  async function handleSubmitCheckin(
+    draft: SafetyCheckinDraft
+  ): Promise<{ queued: boolean }> {
+    const result = await submitSafetyCheckin(draft, isOffline);
+    if (result.queued) {
+      setQueuedCheckins((prev) => [result.checkin, ...prev]);
+    } else {
+      setCheckins((prev) => {
+        const updated = [result.checkin, ...prev];
+        void saveCachedCheckins(updated);
+        return updated;
+      });
+    }
+    return { queued: result.queued };
+  }
 
   async function handleSubmitReport(
     draft: ReportDraft
@@ -430,13 +506,33 @@ export default function App() {
 
       <TopBar
         activeTab={activeTab}
+        batterySaver={batterySaver}
         onSelectTab={setActiveTab}
+        onToggleBatterySaver={() => setBatterySaver((prev) => !prev)}
         onOpenReportModal={() => setIsReportModalOpen(true)}
       />
 
       <AdvisoryStrip advisories={advisories} />
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6">
+        {batterySaver && (
+          <div
+            role="status"
+            className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-700/60 bg-emerald-950/60 px-4 py-2.5 text-xs text-emerald-200"
+          >
+            <span>
+              <strong>Battery-Saver Mode Active</strong> — Low-glare dark surface enabled, live background polling and map tiles paused.
+            </span>
+            <button
+              type="button"
+              onClick={() => setBatterySaver(false)}
+              className="cursor-pointer font-semibold underline hover:text-white"
+            >
+              Turn Off
+            </button>
+          </div>
+        )}
+
         {bannerFeedback && (
           <div
             role="status"
@@ -455,6 +551,7 @@ export default function App() {
             searchQuery={searchQuery}
             confirmedIds={confirmedIds}
             isOffline={isOffline}
+            batterySaver={batterySaver}
             simulatedOffline={simulatedOffline}
             isSyncing={isSyncing}
             isRefreshing={isRefreshing}
@@ -486,6 +583,7 @@ export default function App() {
             centers={centers}
             reports={[...queuedReports, ...reports]}
             isOffline={isOffline}
+            batterySaver={batterySaver}
             isRefreshing={isRefreshing}
             usingSupabase={
               isSupabaseConfigured &&
@@ -496,6 +594,16 @@ export default function App() {
             supabaseConfigured={isSupabaseConfigured}
             lastSyncError={lastSyncError}
             onRefresh={() => void refreshFromRemote()}
+          />
+        )}
+
+        {activeTab === 'safety' && (
+          <SafetyToolsView
+            checkins={checkins}
+            queuedCheckins={queuedCheckins}
+            centers={centers}
+            isOffline={isOffline}
+            onSubmitCheckin={handleSubmitCheckin}
           />
         )}
 

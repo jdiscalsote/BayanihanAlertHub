@@ -26,6 +26,7 @@ interface EvacuationDirectoryViewProps {
   centers: EvacuationCenter[];
   reports?: HazardReport[];
   isOffline: boolean;
+  batterySaver?: boolean;
   isRefreshing: boolean;
   usingSupabase: boolean;
   supabaseConfigured: boolean;
@@ -80,6 +81,7 @@ export function EvacuationDirectoryView({
   centers,
   reports = [],
   isOffline,
+  batterySaver = false,
   isRefreshing,
   usingSupabase,
   supabaseConfigured,
@@ -279,6 +281,7 @@ export function EvacuationDirectoryView({
               : (r.municipality || 'Quezon City') === selectedMunicipality
           )}
           isOffline={isOffline}
+          batterySaver={batterySaver}
           selectedMunicipality={selectedMunicipality}
           initialRouteCenterId={routeCenterId}
           onClearInitialRoute={() => setRouteCenterId(null)}

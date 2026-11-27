@@ -38,6 +38,7 @@ interface EmergencyMapViewProps {
   centers: EvacuationCenter[];
   reports: HazardReport[];
   isOffline: boolean;
+  batterySaver?: boolean;
   selectedMunicipality?: string;
   initialRouteCenterId?: string | null;
   onClearInitialRoute?: () => void;
@@ -395,6 +396,7 @@ export function EmergencyMapView({
   centers,
   reports,
   isOffline,
+  batterySaver = false,
   selectedMunicipality,
   initialRouteCenterId,
   onClearInitialRoute,
@@ -596,21 +598,25 @@ export function EmergencyMapView({
     return userLocation;
   }, [showNearbySupport, routeDestination, userLocation]);
 
-  if (isOffline || !MAPS_API_KEY) {
+  if (isOffline || batterySaver || !MAPS_API_KEY) {
     return (
       <div className="rounded-lg border border-slate-200 bg-white p-5">
         <div className="flex items-start gap-3">
           <WifiOff className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" aria-hidden="true" />
           <div>
             <h2 className="font-display text-base font-semibold text-slate-900">
-              {isOffline
-                ? 'Interactive Map Paused While Offline'
-                : 'Google Maps Key Not Yet Configured'}
+              {batterySaver
+                ? 'Battery Saver Active — Interactive Map Tiles Paused'
+                : isOffline
+                  ? 'Interactive Map Paused While Offline'
+                  : 'Google Maps Key Not Yet Configured'}
             </h2>
             <p className="mt-1 text-sm text-slate-600">
-              {isOffline
-                ? 'Cached shelter coordinates and open Google Maps links remain available below for low-signal navigation.'
-                : 'Set VITE_GOOGLE_MAPS_API_KEY in your environment to render live interactive map pins and safe routes.'}
+              {batterySaver
+                ? 'Interactive map rendering is paused to extend battery life during brownouts. Cached shelter coordinates and external Google Maps links remain available below.'
+                : isOffline
+                  ? 'Cached shelter coordinates and open Google Maps links remain available below for low-signal navigation.'
+                  : 'Set VITE_GOOGLE_MAPS_API_KEY in your environment to render live interactive map pins and safe routes.'}
             </p>
           </div>
         </div>

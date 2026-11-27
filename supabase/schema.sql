@@ -78,6 +78,19 @@ CREATE TABLE IF NOT EXISTS public.advisories (
   created_by UUID REFERENCES public.moderator_profiles(id) ON DELETE SET NULL
 );
 
+-- Family "I'm Safe" Check-Ins & Person Finder
+CREATE TABLE IF NOT EXISTS public.safety_checkins (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  full_name TEXT NOT NULL CHECK (char_length(full_name) BETWEEN 2 AND 120),
+  status TEXT NOT NULL CHECK (status IN ('Evacuated to Shelter', 'Safe at Home', 'Needs Contact')) DEFAULT 'Evacuated to Shelter',
+  municipality TEXT NOT NULL DEFAULT 'Quezon City',
+  barangay TEXT NOT NULL CHECK (char_length(barangay) BETWEEN 2 AND 100),
+  evacuation_center TEXT DEFAULT NULL CHECK (evacuation_center IS NULL OR char_length(evacuation_center) <= 160),
+  household_count INTEGER NOT NULL DEFAULT 1 CHECK (household_count BETWEEN 1 AND 50),
+  note TEXT NOT NULL DEFAULT '' CHECK (char_length(note) <= 280),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Idempotent column upgrades for existing deployments
 ALTER TABLE public.moderator_profiles
   ADD COLUMN IF NOT EXISTS municipality_assigned TEXT NOT NULL DEFAULT 'All Municipalities';
@@ -116,6 +129,12 @@ CREATE INDEX IF NOT EXISTS idx_evacuation_centers_status_barangay
 CREATE INDEX IF NOT EXISTS idx_advisories_active_recent
   ON public.advisories (is_active, municipality, created_at DESC)
   WHERE is_active = true;
+
+CREATE INDEX IF NOT EXISTS idx_safety_checkins_recent
+  ON public.safety_checkins (municipality, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_safety_checkins_name
+  ON public.safety_checkins (lower(full_name));
 
 -- ----------------------------------------------------------------------------
 -- 3. SECURITY HELPERS & TRIGGERS
@@ -235,12 +254,14 @@ ALTER TABLE public.moderator_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.evacuation_centers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.hazard_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.advisories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.safety_checkins ENABLE ROW LEVEL SECURITY;
 
 GRANT USAGE ON SCHEMA public TO anon, authenticated;
 GRANT SELECT ON public.moderator_profiles TO authenticated;
-GRANT SELECT ON public.evacuation_centers, public.hazard_reports, public.advisories TO anon, authenticated;
-GRANT INSERT ON public.hazard_reports TO anon, authenticated;
+GRANT SELECT ON public.evacuation_centers, public.hazard_reports, public.advisories, public.safety_checkins TO anon, authenticated;
+GRANT INSERT ON public.hazard_reports, public.safety_checkins TO anon, authenticated;
 GRANT UPDATE, DELETE ON public.hazard_reports, public.evacuation_centers, public.advisories TO authenticated;
+GRANT DELETE ON public.safety_checkins TO authenticated;
 GRANT INSERT ON public.evacuation_centers, public.advisories TO authenticated;
 
 -- moderator_profiles: users can only read their own moderator profile
@@ -309,6 +330,25 @@ CREATE POLICY "Moderators manage advisories"
   USING (public.can_manage_municipality(municipality))
   WITH CHECK (public.can_manage_municipality(municipality));
 
+-- safety_checkins: public read & insert for family person-finder; moderators delete
+DROP POLICY IF EXISTS "Public read safety check-ins" ON public.safety_checkins;
+CREATE POLICY "Public read safety check-ins"
+  ON public.safety_checkins FOR SELECT
+  TO anon, authenticated
+  USING (true);
+
+DROP POLICY IF EXISTS "Public insert safety check-ins" ON public.safety_checkins;
+CREATE POLICY "Public insert safety check-ins"
+  ON public.safety_checkins FOR INSERT
+  TO anon, authenticated
+  WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Moderators delete safety check-ins" ON public.safety_checkins;
+CREATE POLICY "Moderators delete safety check-ins"
+  ON public.safety_checkins FOR DELETE
+  TO authenticated
+  USING (public.can_manage_municipality(municipality));
+
 -- ----------------------------------------------------------------------------
 -- 5. SELECTIVE REALTIME PUBLICATION (FREE-TIER FRIENDLY)
 -- ----------------------------------------------------------------------------
@@ -334,6 +374,13 @@ BEGIN
     WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'advisories'
   ) THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.advisories;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'safety_checkins'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.safety_checkins;
   END IF;
 END $$;
 
