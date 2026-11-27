@@ -26,10 +26,14 @@ const KEYS = {
   CHECKIN_QUEUE: 'pending_checkin_queue',
   CONFIRMED_IDS: 'confirmed_report_ids',
   LAST_SUBMIT_AT: 'last_report_submit_at',
+  LAST_CHECKIN_SUBMIT_AT: 'last_checkin_submit_at',
+  RECENT_SUBMISSIONS: 'recent_submission_fingerprints',
   LAST_SYNCED_AT: 'last_synced_at',
 } as const;
 
-const REPORT_COOLDOWN_MS = 15_000;
+export const REPORT_COOLDOWN_MS = 15_000;
+export const CHECKIN_COOLDOWN_MS = 30_000;
+export const DUPLICATE_SUBMISSION_WINDOW_MS = 5 * 60_000;
 
 function openIDB(): Promise<IDBDatabase | null> {
   if (typeof indexedDB === 'undefined') {
@@ -250,11 +254,12 @@ export function markReportConfirmedLocally(reportId: string): Set<string> {
   return set;
 }
 
-export function getRemainingCooldownSeconds(): number {
+export function getRemainingCooldownSeconds(nowMs = Date.now()): number {
   try {
     const raw = localStorage.getItem(`bayanihan:${KEYS.LAST_SUBMIT_AT}`);
     if (!raw) return 0;
-    const elapsed = Date.now() - Number(raw);
+    const elapsed = nowMs - Number(raw);
+    if (elapsed < 0) return 0;
     if (elapsed >= REPORT_COOLDOWN_MS) return 0;
     return Math.ceil((REPORT_COOLDOWN_MS - elapsed) / 1000);
   } catch {
@@ -262,9 +267,118 @@ export function getRemainingCooldownSeconds(): number {
   }
 }
 
-export function recordReportSubmissionTimestamp(): void {
+export function recordReportSubmissionTimestamp(nowMs = Date.now()): void {
   try {
-    localStorage.setItem(`bayanihan:${KEYS.LAST_SUBMIT_AT}`, String(Date.now()));
+    localStorage.setItem(`bayanihan:${KEYS.LAST_SUBMIT_AT}`, String(nowMs));
+  } catch {
+    // Ignore storage error
+  }
+}
+
+export function getRemainingCheckinCooldownSeconds(nowMs = Date.now()): number {
+  try {
+    const raw = localStorage.getItem(`bayanihan:${KEYS.LAST_CHECKIN_SUBMIT_AT}`);
+    if (!raw) return 0;
+    const elapsed = nowMs - Number(raw);
+    if (elapsed < 0) return 0;
+    if (elapsed >= CHECKIN_COOLDOWN_MS) return 0;
+    return Math.ceil((CHECKIN_COOLDOWN_MS - elapsed) / 1000);
+  } catch {
+    return 0;
+  }
+}
+
+export function recordCheckinSubmissionTimestamp(nowMs = Date.now()): void {
+  try {
+    localStorage.setItem(
+      `bayanihan:${KEYS.LAST_CHECKIN_SUBMIT_AT}`,
+      String(nowMs)
+    );
+  } catch {
+    // Ignore storage error
+  }
+}
+
+interface RecentSubmissionEntry {
+  key: string;
+  at: number;
+}
+
+function normalizeToken(value: string | undefined | null): string {
+  return (value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+export function buildReportFingerprint(
+  draft: Pick<
+    ReportDraft,
+    'category' | 'municipality' | 'barangay' | 'street_or_landmark' | 'description'
+  >
+): string {
+  return [
+    'report',
+    normalizeToken(draft.category),
+    normalizeToken(draft.municipality),
+    normalizeToken(draft.barangay),
+    normalizeToken(draft.street_or_landmark),
+    normalizeToken(draft.description).slice(0, 120),
+  ].join('|');
+}
+
+export function buildCheckinFingerprint(
+  draft: Pick<
+    SafetyCheckinDraft,
+    'full_name' | 'status' | 'municipality' | 'barangay'
+  >
+): string {
+  return [
+    'checkin',
+    normalizeToken(draft.full_name),
+    normalizeToken(draft.status),
+    normalizeToken(draft.municipality),
+    normalizeToken(draft.barangay),
+  ].join('|');
+}
+
+function loadRecentSubmissions(nowMs: number): RecentSubmissionEntry[] {
+  try {
+    const raw = localStorage.getItem(`bayanihan:${KEYS.RECENT_SUBMISSIONS}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (entry): entry is RecentSubmissionEntry =>
+        Boolean(entry) &&
+        typeof (entry as RecentSubmissionEntry).key === 'string' &&
+        typeof (entry as RecentSubmissionEntry).at === 'number' &&
+        nowMs - (entry as RecentSubmissionEntry).at < DUPLICATE_SUBMISSION_WINDOW_MS &&
+        nowMs >= (entry as RecentSubmissionEntry).at
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function isDuplicateSubmission(
+  fingerprint: string,
+  nowMs = Date.now()
+): boolean {
+  const active = loadRecentSubmissions(nowMs);
+  return active.some((entry) => entry.key === fingerprint);
+}
+
+export function recordSubmissionFingerprint(
+  fingerprint: string,
+  nowMs = Date.now()
+): void {
+  try {
+    const active = loadRecentSubmissions(nowMs).filter(
+      (entry) => entry.key !== fingerprint
+    );
+    const updated = [{ key: fingerprint, at: nowMs }, ...active].slice(0, 25);
+    localStorage.setItem(
+      `bayanihan:${KEYS.RECENT_SUBMISSIONS}`,
+      JSON.stringify(updated)
+    );
   } catch {
     // Ignore storage error
   }

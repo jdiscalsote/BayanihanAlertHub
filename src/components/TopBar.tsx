@@ -1,5 +1,6 @@
 import { BatteryCharging } from 'lucide-react';
 import type { ActiveTab } from '../types/alert';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface TopBarProps {
   activeTab: ActiveTab;
@@ -60,8 +61,9 @@ export function TopBar({
           })}
         </nav>
 
-        {/* Zone 3: Battery Saver toggle + Primary emergency action */}
+        {/* Zone 3: Install PWA + Battery Saver toggle + Primary emergency action */}
         <div className="flex shrink-0 items-center gap-2">
+          <PWAInstallButton />
           <button
             type="button"
             onClick={onToggleBatterySaver}

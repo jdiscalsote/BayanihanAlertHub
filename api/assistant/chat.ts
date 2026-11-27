@@ -1,6 +1,7 @@
 import type { ServerResponse } from 'http';
 import { handleAssistantChat } from '../../server/apiHandlers';
 import {
+  getClientIp,
   readJsonBody,
   sendJson,
   type ServerlessRequest,
@@ -20,7 +21,7 @@ export default async function handler(
 
   try {
     const body = await readJsonBody(req);
-    const result = await handleAssistantChat(body);
+    const result = await handleAssistantChat(body, getClientIp(req));
     sendJson(res, result);
   } catch (err) {
     const message =

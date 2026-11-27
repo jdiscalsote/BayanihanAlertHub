@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertOctagon,
   AlertTriangle,
@@ -18,6 +18,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { EMERGENCY_HOTLINES } from '../data/seedData';
+import { fetchHazardReportsPage } from '../services/supabaseClient';
 import { EmergencyMapView } from './EmergencyMapView';
 import type {
   EvacuationCenter,
@@ -47,12 +48,15 @@ interface LiveFeedViewProps {
   lastSyncError: string | null;
   usingSupabase: boolean;
   supabaseConfigured: boolean;
+  hasMoreReports?: boolean;
+  loadingMoreReports?: boolean;
   onFilterChange: (filter: FeedFilter) => void;
   onSearchChange: (q: string) => void;
   onConfirmReport: (reportId: string) => void;
   onToggleSimulatedOffline: () => void;
   onSyncNow: () => void;
   onManualRefresh: () => void;
+  onLoadMoreReports?: () => void;
   onOpenReportModal: () => void;
   onJumpToShelters: () => void;
 }
@@ -130,19 +134,79 @@ export function LiveFeedView({
   lastSyncError,
   usingSupabase,
   supabaseConfigured,
+  hasMoreReports = false,
+  loadingMoreReports = false,
   onFilterChange,
   onSearchChange,
   onConfirmReport,
   onToggleSimulatedOffline,
   onSyncNow,
   onManualRefresh,
+  onLoadMoreReports,
   onOpenReportModal,
   onJumpToShelters,
 }: LiveFeedViewProps) {
   const [selectedMunicipality, setSelectedMunicipality] = useState<string>('All');
   const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>('All');
   const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
-  const combinedReports = [...queuedReports, ...reports];
+  const [remoteReports, setRemoteReports] = useState<HazardReport[] | null>(null);
+  const [searchingRemote, setSearchingRemote] = useState(false);
+
+  useEffect(() => {
+    const trimmed = searchQuery.trim();
+    if (
+      (trimmed.length < 2 && selectedMunicipality === 'All') ||
+      isOffline ||
+      !supabaseConfigured
+    ) {
+      setRemoteReports(null);
+      setSearchingRemote(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSearchingRemote(true);
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await fetchHazardReportsPage({
+            municipality: selectedMunicipality,
+            query: trimmed || undefined,
+            limit: 60,
+          });
+          if (!cancelled) {
+            setRemoteReports(res.reports.filter((r) => r.status !== 'dismissed'));
+          }
+        } catch {
+          if (!cancelled) {
+            setRemoteReports(null);
+          }
+        } finally {
+          if (!cancelled) {
+            setSearchingRemote(false);
+          }
+        }
+      })();
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [searchQuery, selectedMunicipality, isOffline, supabaseConfigured]);
+
+  const combinedReports = useMemo(() => {
+    const base = [...queuedReports, ...reports];
+    if (!remoteReports) return base;
+    const merged = new Map<string, HazardReport>();
+    for (const item of [...queuedReports, ...remoteReports, ...reports]) {
+      if (!merged.has(item.id)) {
+        merged.set(item.id, item);
+      }
+    }
+    return Array.from(merged.values());
+  }, [queuedReports, reports, remoteReports]);
+
   const availableMunicipalities = Array.from(
     new Set([
       ...combinedReports.map((r) => r.municipality || 'Quezon City'),
@@ -651,6 +715,26 @@ export function LiveFeedView({
               </article>
             );
           })}
+
+          {(searchingRemote || (hasMoreReports && onLoadMoreReports && !isOffline)) && (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-xs text-slate-500">
+              <span>
+                {searchingRemote
+                  ? 'Querying nationwide database...'
+                  : 'Showing recent alerts.'}
+              </span>
+              {hasMoreReports && onLoadMoreReports && !isOffline && (
+                <button
+                  type="button"
+                  onClick={onLoadMoreReports}
+                  disabled={loadingMoreReports}
+                  className="cursor-pointer rounded-md border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                >
+                  {loadingMoreReports ? 'Loading older alerts...' : 'Load More Alerts'}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

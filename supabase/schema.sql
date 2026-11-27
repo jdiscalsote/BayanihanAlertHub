@@ -297,7 +297,28 @@ ALTER TABLE public.safety_checkins ENABLE ROW LEVEL SECURITY;
 GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.moderator_profiles TO authenticated;
-GRANT SELECT ON public.evacuation_centers, public.hazard_reports, public.advisories, public.safety_checkins TO anon, authenticated;
+GRANT SELECT ON public.evacuation_centers, public.advisories, public.safety_checkins TO anon, authenticated;
+GRANT SELECT ON public.hazard_reports TO authenticated;
+REVOKE SELECT ON public.hazard_reports FROM anon;
+GRANT SELECT (
+  id,
+  category,
+  severity,
+  region,
+  municipality,
+  barangay,
+  street_or_landmark,
+  description,
+  flood_level,
+  is_verified,
+  status,
+  confirmations_count,
+  created_at,
+  updated_at,
+  verified_at,
+  latitude,
+  longitude
+) ON public.hazard_reports TO anon;
 GRANT INSERT ON public.hazard_reports, public.safety_checkins TO anon, authenticated;
 GRANT UPDATE, DELETE ON public.hazard_reports, public.evacuation_centers, public.advisories TO authenticated;
 GRANT DELETE ON public.safety_checkins TO authenticated;

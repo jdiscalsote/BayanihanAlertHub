@@ -36,6 +36,8 @@ import {
   deleteOfficialAdvisory,
   deleteSafetyCheckin,
   fetchAllLiveData,
+  fetchEvacuationCentersPage,
+  fetchHazardReportsPage,
   fetchSafetyCheckins,
   getActiveModeratorSession,
   isSupabaseConfigured,
@@ -102,6 +104,12 @@ export default function App() {
   const [checkinSyncError, setCheckinSyncError] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [hasMoreReports, setHasMoreReports] = useState(false);
+  const [hasMoreCenters, setHasMoreCenters] = useState(false);
+  const [hasMoreCheckins, setHasMoreCheckins] = useState(false);
+  const [loadingMoreReports, setLoadingMoreReports] = useState(false);
+  const [loadingMoreCenters, setLoadingMoreCenters] = useState(false);
+  const [loadingMoreCheckins, setLoadingMoreCheckins] = useState(false);
   const [bannerFeedback, setBannerFeedback] = useState<string | null>(null);
   const [moderator, setModerator] = useState<ModeratorProfile | null>(null);
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
@@ -161,11 +169,14 @@ export default function App() {
         setReports(bundle.reports);
         setCenters(bundle.centers);
         setAdvisories(bundle.advisories);
+        setHasMoreReports(bundle.hasMoreReports);
+        setHasMoreCenters(bundle.hasMoreCenters);
         setLastSyncedAt(bundle.syncedAt);
         setLastSyncError(null);
       }
       if (checkinsResult.checkins) {
         setCheckins(checkinsResult.checkins);
+        setHasMoreCheckins(checkinsResult.hasMore);
         setCheckinSyncError(null);
       } else if (checkinsResult.error) {
         setCheckinSyncError(checkinsResult.error);
@@ -178,6 +189,70 @@ export default function App() {
       setIsRefreshing(false);
     }
   }, [isOffline, notify]);
+
+  const handleLoadMoreReports = useCallback(async () => {
+    if (isOffline || !isSupabaseConfigured || loadingMoreReports) return;
+    setLoadingMoreReports(true);
+    try {
+      const page = await fetchHazardReportsPage({
+        offset: reports.length,
+      });
+      setReports((prev) => {
+        const seen = new Set(prev.map((r) => r.id));
+        const appended = page.reports.filter((r) => !seen.has(r.id));
+        return [...prev, ...appended];
+      });
+      setHasMoreReports(page.hasMore);
+    } catch (err) {
+      notify(
+        err instanceof Error ? err.message : 'Unable to load additional reports.'
+      );
+    } finally {
+      setLoadingMoreReports(false);
+    }
+  }, [isOffline, loadingMoreReports, reports.length, notify]);
+
+  const handleLoadMoreCenters = useCallback(async () => {
+    if (isOffline || !isSupabaseConfigured || loadingMoreCenters) return;
+    setLoadingMoreCenters(true);
+    try {
+      const page = await fetchEvacuationCentersPage({
+        offset: centers.length,
+      });
+      setCenters((prev) => {
+        const seen = new Set(prev.map((c) => c.id));
+        const appended = page.centers.filter((c) => !seen.has(c.id));
+        return [...prev, ...appended];
+      });
+      setHasMoreCenters(page.hasMore);
+    } catch (err) {
+      notify(
+        err instanceof Error ? err.message : 'Unable to load additional shelters.'
+      );
+    } finally {
+      setLoadingMoreCenters(false);
+    }
+  }, [isOffline, loadingMoreCenters, centers.length, notify]);
+
+  const handleLoadMoreCheckins = useCallback(async () => {
+    if (isOffline || !isSupabaseConfigured || loadingMoreCheckins) return;
+    setLoadingMoreCheckins(true);
+    try {
+      const page = await fetchSafetyCheckins({
+        offset: checkins.length,
+      });
+      if (page.checkins) {
+        setCheckins((prev) => {
+          const seen = new Set(prev.map((c) => c.id));
+          const appended = page.checkins!.filter((c) => !seen.has(c.id));
+          return [...prev, ...appended];
+        });
+        setHasMoreCheckins(page.hasMore);
+      }
+    } finally {
+      setLoadingMoreCheckins(false);
+    }
+  }, [isOffline, loadingMoreCheckins, checkins.length]);
 
   const handleSyncQueue = useCallback(async () => {
     if (isOffline) return;
@@ -689,6 +764,8 @@ export default function App() {
                 reports.some((r) => isUuid(r.id)))
             }
             supabaseConfigured={isSupabaseConfigured}
+            hasMoreReports={hasMoreReports}
+            loadingMoreReports={loadingMoreReports}
             onFilterChange={setFilter}
             onSearchChange={setSearchQuery}
             onConfirmReport={(id) => void handleConfirmReport(id)}
@@ -697,6 +774,7 @@ export default function App() {
             }
             onSyncNow={() => void handleSyncQueue()}
             onManualRefresh={() => void refreshFromRemote()}
+            onLoadMoreReports={() => void handleLoadMoreReports()}
             onOpenReportModal={() => setIsReportModalOpen(true)}
             onJumpToShelters={() => setActiveTab('evacuation')}
           />
@@ -720,7 +798,10 @@ export default function App() {
             }
             supabaseConfigured={isSupabaseConfigured}
             lastSyncError={lastSyncError}
+            hasMoreCenters={hasMoreCenters}
+            loadingMoreCenters={loadingMoreCenters}
             onRefresh={() => void refreshFromRemote()}
+            onLoadMoreCenters={() => void handleLoadMoreCenters()}
           />
         )}
 
@@ -732,6 +813,8 @@ export default function App() {
             isOffline={isOffline}
             isSyncing={isSyncing}
             isRefreshing={isRefreshing}
+            hasMoreCheckins={hasMoreCheckins}
+            loadingMoreCheckins={loadingMoreCheckins}
             supabaseConfigured={isSupabaseConfigured}
             usingSupabaseCheckins={
               isSupabaseConfigured && !isOffline && !checkinSyncError
@@ -740,6 +823,7 @@ export default function App() {
             onSubmitCheckin={handleSubmitCheckin}
             onSyncCheckins={() => void handleSyncQueue()}
             onRefreshCheckins={() => void refreshFromRemote()}
+            onLoadMoreCheckins={() => void handleLoadMoreCheckins()}
           />
         )}
 
@@ -758,15 +842,18 @@ export default function App() {
               setModerator(profile);
               await refreshFromRemote();
             }}
-            onDemoSignIn={() =>
-              setModerator({
-                id: 'demo-moderator',
-                email: 'admin@bayanihan.local',
-                full_name: 'Capt. Ramon Villanueva',
-                role: 'admin',
-                barangay_assigned: 'Brgy. Tatalon DRRMO (Preview)',
-                municipality_assigned: 'All Municipalities',
-              })
+            onDemoSignIn={
+              import.meta.env.DEV
+                ? () =>
+                    setModerator({
+                      id: 'demo-moderator',
+                      email: 'admin@bayanihan.local',
+                      full_name: 'Capt. Ramon Villanueva',
+                      role: 'admin',
+                      barangay_assigned: 'Brgy. Tatalon DRRMO (Preview)',
+                      municipality_assigned: 'All Municipalities',
+                    })
+                : undefined
             }
             onSignOut={async () => {
               await signOutModerator();

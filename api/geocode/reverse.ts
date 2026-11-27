@@ -1,6 +1,7 @@
 import type { ServerResponse } from 'http';
 import { handleReverseGeocode } from '../../server/apiHandlers';
 import {
+  getClientIp,
   getQueryParam,
   sendJson,
   type ServerlessRequest,
@@ -20,6 +21,6 @@ export default async function handler(
 
   const lat = getQueryParam(req, 'lat');
   const lng = getQueryParam(req, 'lng');
-  const result = await handleReverseGeocode(lat, lng);
+  const result = await handleReverseGeocode(lat, lng, getClientIp(req));
   sendJson(res, result);
 }

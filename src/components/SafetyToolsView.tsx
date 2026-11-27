@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   AlertTriangle,
   Backpack,
@@ -15,6 +15,14 @@ import {
   UserCheck,
   Users,
 } from 'lucide-react';
+import {
+  buildCheckinFingerprint,
+  getRemainingCheckinCooldownSeconds,
+  isDuplicateSubmission,
+  recordCheckinSubmissionTimestamp,
+  recordSubmissionFingerprint,
+} from '../services/offlineSync';
+import { searchSafetyCheckinsRemote } from '../services/supabaseClient';
 import type {
   EvacuationCenter,
   SafetyCheckin,
@@ -137,6 +145,8 @@ interface SafetyToolsViewProps {
   isOffline: boolean;
   isSyncing: boolean;
   isRefreshing: boolean;
+  hasMoreCheckins?: boolean;
+  loadingMoreCheckins?: boolean;
   supabaseConfigured: boolean;
   usingSupabaseCheckins: boolean;
   checkinSyncError: string | null;
@@ -145,6 +155,7 @@ interface SafetyToolsViewProps {
   ) => Promise<{ queued: boolean; syncError?: string }>;
   onSyncCheckins: () => void;
   onRefreshCheckins: () => void;
+  onLoadMoreCheckins?: () => void;
 }
 
 const CHECKIN_STATUSES: SafetyCheckinStatus[] = [
@@ -160,12 +171,15 @@ export function SafetyToolsView({
   isOffline,
   isSyncing,
   isRefreshing,
+  hasMoreCheckins = false,
+  loadingMoreCheckins = false,
   supabaseConfigured,
   usingSupabaseCheckins,
   checkinSyncError,
   onSubmitCheckin,
   onSyncCheckins,
   onRefreshCheckins,
+  onLoadMoreCheckins,
 }: SafetyToolsViewProps) {
   // 1. One-Tap SOS SMS & Share Location state
   const [sosMode, setSosMode] = useState<'rescue' | 'safe'>('rescue');
@@ -192,17 +206,60 @@ export function SafetyToolsView({
   const [evacuationCenter, setEvacuationCenter] = useState('');
   const [householdCount, setHouseholdCount] = useState(1);
   const [checkinNote, setCheckinNote] = useState('');
+  const [checkinHoneypot, setCheckinHoneypot] = useState('');
   const [submittingCheckin, setSubmittingCheckin] = useState(false);
   const [checkinFeedback, setCheckinFeedback] = useState<{
     tone: 'success' | 'warning';
     text: string;
   } | null>(null);
   const [copiedSql, setCopiedSql] = useState(false);
+  const [remoteSearchResults, setRemoteSearchResults] = useState<
+    SafetyCheckin[] | null
+  >(null);
+  const [searchingRemote, setSearchingRemote] = useState(false);
 
   // 3. Go-Bag Checklist state
   const [checkedItems, setCheckedItems] = useState<Record<string, boolean>>(
     () => loadCheckedGoBag()
   );
+
+  useEffect(() => {
+    const q = checkinQuery.trim();
+    if (q.length < 2 || isOffline || !supabaseConfigured) {
+      setRemoteSearchResults(null);
+      setSearchingRemote(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSearchingRemote(true);
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await searchSafetyCheckinsRemote({
+            query: q,
+            limit: 60,
+          });
+          if (!cancelled && res.checkins) {
+            setRemoteSearchResults(res.checkins);
+          }
+        } catch {
+          if (!cancelled) {
+            setRemoteSearchResults(null);
+          }
+        } finally {
+          if (!cancelled) {
+            setSearchingRemote(false);
+          }
+        }
+      })();
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [checkinQuery, isOffline, supabaseConfigured]);
 
   const sosMessageText = useMemo(() => {
     const header =
@@ -288,6 +345,19 @@ export function SafetyToolsView({
 
   async function handleCheckinSubmit(e: FormEvent) {
     e.preventDefault();
+    if (checkinHoneypot.trim().length > 0) {
+      return;
+    }
+
+    const cooldown = getRemainingCheckinCooldownSeconds();
+    if (cooldown > 0) {
+      setCheckinFeedback({
+        tone: 'warning',
+        text: `Please wait ${cooldown}s before posting another family check-in.`,
+      });
+      return;
+    }
+
     if (fullName.trim().length < 2) {
       setCheckinFeedback({
         tone: 'warning',
@@ -303,18 +373,31 @@ export function SafetyToolsView({
       return;
     }
 
+    const draftPayload: SafetyCheckinDraft = {
+      full_name: fullName.trim(),
+      status: checkinStatus,
+      municipality: municipality.trim() || 'Quezon City',
+      barangay: barangay.trim(),
+      evacuation_center: evacuationCenter.trim() || undefined,
+      household_count: householdCount,
+      note: checkinNote.trim(),
+    };
+
+    const fingerprint = buildCheckinFingerprint(draftPayload);
+    if (isDuplicateSubmission(fingerprint)) {
+      setCheckinFeedback({
+        tone: 'warning',
+        text: 'A matching check-in for this household was already posted within the last 5 minutes.',
+      });
+      return;
+    }
+
     setSubmittingCheckin(true);
     setCheckinFeedback(null);
     try {
-      const result = await onSubmitCheckin({
-        full_name: fullName.trim(),
-        status: checkinStatus,
-        municipality: municipality.trim() || 'Quezon City',
-        barangay: barangay.trim(),
-        evacuation_center: evacuationCenter.trim() || undefined,
-        household_count: householdCount,
-        note: checkinNote.trim(),
-      });
+      const result = await onSubmitCheckin(draftPayload);
+      recordCheckinSubmissionTimestamp();
+      recordSubmissionFingerprint(fingerprint);
       setFullName('');
       setCheckinNote('');
       if (result.queued) {
@@ -361,7 +444,19 @@ export function SafetyToolsView({
     }
   }
 
-  const allCheckins = [...queuedCheckins, ...checkins];
+  const allCheckins = useMemo(() => {
+    if (remoteSearchResults !== null && checkinQuery.trim().length >= 2) {
+      const mergedMap = new Map<string, SafetyCheckin>();
+      for (const item of [...queuedCheckins, ...remoteSearchResults, ...checkins]) {
+        if (!mergedMap.has(item.id)) {
+          mergedMap.set(item.id, item);
+        }
+      }
+      return Array.from(mergedMap.values());
+    }
+    return [...queuedCheckins, ...checkins];
+  }, [remoteSearchResults, checkinQuery, queuedCheckins, checkins]);
+
   const normalizedCheckinSearch = checkinQuery.trim().toLowerCase();
   const filteredCheckins = allCheckins.filter((c) => {
     if (!normalizedCheckinSearch) return true;
@@ -710,6 +805,18 @@ export function SafetyToolsView({
           )}
 
           <form onSubmit={handleCheckinSubmit} className="mt-4 space-y-3">
+            <div aria-hidden="true" className="sr-only">
+              <label htmlFor="chk-website-trap">Organization Website</label>
+              <input
+                id="chk-website-trap"
+                type="text"
+                name="organization_site"
+                tabIndex={-1}
+                autoComplete="off"
+                value={checkinHoneypot}
+                onChange={(e) => setCheckinHoneypot(e.target.value)}
+              />
+            </div>
             {checkinFeedback && (
               <div
                 role="status"
@@ -969,6 +1076,26 @@ export function SafetyToolsView({
                   )}
                 </article>
               ))
+            )}
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+            <span>
+              {searchingRemote
+                ? 'Searching national database...'
+                : checkinQuery.trim().length >= 2 && supabaseConfigured && !isOffline
+                  ? 'Live nationwide database search active.'
+                  : 'Showing recent check-ins.'}
+            </span>
+            {hasMoreCheckins && onLoadMoreCheckins && !isOffline && (
+              <button
+                type="button"
+                onClick={onLoadMoreCheckins}
+                disabled={loadingMoreCheckins}
+                className="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {loadingMoreCheckins ? 'Loading more...' : 'Load More Check-Ins'}
+              </button>
             )}
           </div>
         </div>

@@ -5,6 +5,7 @@ import express, {
   type Response,
 } from 'express';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -21,6 +22,7 @@ const PORT = Number(process.env.PORT) || 3000;
 
 async function startServer() {
   const app = express();
+  app.set('trust proxy', 1);
   app.use(express.json({ limit: '1mb' }));
 
   // Ensure malformed JSON request bodies return JSON rather than Express's HTML error page
@@ -43,13 +45,17 @@ async function startServer() {
 
   // 1. Context-Aware Bayanihan Assistant Chat (Supabase + Google Search Grounding)
   app.post('/api/assistant/chat', async (req: Request, res: Response) => {
-    const result = await handleAssistantChat(req.body);
+    const result = await handleAssistantChat(req.body, req.ip || 'unknown');
     res.status(result.status).json(result.body);
   });
 
   // 3. Reverse Geocoding Server Proxy (prevents browser CORS issues & legacy JS Geocoder usage)
   app.get('/api/geocode/reverse', async (req: Request, res: Response) => {
-    const result = await handleReverseGeocode(req.query.lat, req.query.lng);
+    const result = await handleReverseGeocode(
+      req.query.lat,
+      req.query.lng,
+      req.ip || 'unknown'
+    );
     res.status(result.status).json(result.body);
   });
 
@@ -71,12 +77,74 @@ async function startServer() {
     res.status(404).json({ error: 'API endpoint not found.' });
   });
 
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
+    const hmrDisabled = process.env.DISABLE_HMR === 'true';
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: hmrDisabled ? false : { server: httpServer },
+        ...(hmrDisabled ? { ws: false } : {}),
+      },
       appType: 'spa',
     });
+
+    if (hmrDisabled) {
+      app.get(
+        '/@vite/client',
+        async (_req: Request, res: Response, next: NextFunction) => {
+          try {
+            const result = await vite.transformRequest('/@vite/client');
+            if (!result?.code) {
+              next();
+              return;
+            }
+            const patched = result.code
+              .replace(
+                'transport.connect(createHMRHandler(handleMessage));',
+                '/* HMR disabled via DISABLE_HMR */'
+              )
+              .replace(
+                'else throw new SendBeforeConnectError("send was called before connect");',
+                'else return;'
+              )
+              .replace(
+                'else throw new SendBeforeConnectError("invoke was called before connect");',
+                'else return undefined;'
+              );
+            res
+              .setHeader('Cache-Control', 'no-store')
+              .type('application/javascript')
+              .send(patched);
+          } catch (err) {
+            next(err);
+          }
+        }
+      );
+
+      app.get(
+        '/@vite-plugin-pwa/pwa-entry-point-loaded',
+        (_req: Request, res: Response) => {
+          res
+            .setHeader('Cache-Control', 'no-store')
+            .type('application/javascript')
+            .send('export default function registerDevSW() {}\n');
+        }
+      );
+
+      app.get(['/dev-sw.js', '/sw.js'], (_req: Request, res: Response) => {
+        res
+          .setHeader('Cache-Control', 'no-store')
+          .type('application/javascript')
+          .send(
+            "self.addEventListener('install', () => self.skipWaiting());\n" +
+              "self.addEventListener('activate', () => { self.registration.unregister(); });\n"
+          );
+      });
+    }
+
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(__dirname, 'dist');
@@ -103,7 +171,7 @@ async function startServer() {
     }
   );
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Bayanihan Alert Hub server listening on http://0.0.0.0:${PORT}`);
   });
 }

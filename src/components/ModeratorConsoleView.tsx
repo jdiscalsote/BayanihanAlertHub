@@ -109,7 +109,7 @@ interface ModeratorConsoleViewProps {
   checkins: SafetyCheckin[];
   checkinSyncError: string | null;
   onSignIn: (email: string, password: string) => Promise<void>;
-  onDemoSignIn: () => void;
+  onDemoSignIn?: () => void;
   onSignOut: () => Promise<void>;
   onOwnProfileUpdated?: (updated: ModeratorProfile) => void;
   onModerateReport: (
@@ -464,10 +464,10 @@ export function ModeratorConsoleView({
           </button>
         </form>
 
-        {!isSupabaseConfigured && (
+        {import.meta.env.DEV && !isSupabaseConfigured && onDemoSignIn && (
           <div className="mt-5 border-t border-slate-200 pt-4">
             <p className="text-xs text-slate-600">
-              Supabase environment keys are not configured in this preview yet. You can inspect the responder console in local preview mode:
+              Local development preview (Supabase env keys not set):
             </p>
             <button
               type="button"

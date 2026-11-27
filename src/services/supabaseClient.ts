@@ -82,18 +82,96 @@ export function getSupabaseClient(): SupabaseClient | null {
   return clientInstance;
 }
 
+export const PUBLIC_HAZARD_REPORT_COLUMNS =
+  'id,category,severity,region,municipality,barangay,street_or_landmark,description,flood_level,is_verified,status,confirmations_count,created_at,updated_at,verified_at,latitude,longitude';
+
+export const BASE_PUBLIC_HAZARD_REPORT_COLUMNS =
+  'id,category,severity,barangay,street_or_landmark,description,flood_level,is_verified,status,confirmations_count,created_at,verified_at';
+
+export function sanitizePostgrestFilterTerm(raw: string): string {
+  return raw.replace(/[(),%\\*'";]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
+export const REPORTS_PAGE_SIZE = 60;
+export const CENTERS_PAGE_SIZE = 80;
+export const CHECKINS_PAGE_SIZE = 60;
+
 export interface LiveDataBundle {
   reports: HazardReport[];
   centers: EvacuationCenter[];
   advisories: Advisory[];
+  hasMoreReports: boolean;
+  hasMoreCenters: boolean;
   fromSupabase: boolean;
   syncedAt: string;
 }
 
+async function selectHazardReportsQuery(
+  supabase: SupabaseClient,
+  options: {
+    municipality?: string;
+    query?: string;
+    offset?: number;
+    limit?: number;
+  }
+) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const isModeratorSession = Boolean(sessionData.session);
+  const limit = options.limit ?? REPORTS_PAGE_SIZE;
+  const offset = options.offset ?? 0;
+
+  const runWithColumns = async (columns: string) => {
+    let q = supabase
+      .from('hazard_reports')
+      .select(columns)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit);
+
+    if (options.municipality && options.municipality !== 'All') {
+      const muni = sanitizePostgrestFilterTerm(options.municipality);
+      if (muni) {
+        q = q.ilike('municipality', muni);
+      }
+    }
+
+    if (options.query) {
+      const term = sanitizePostgrestFilterTerm(options.query);
+      if (term) {
+        q = q.or(
+          `barangay.ilike.%${term}%,municipality.ilike.%${term}%,street_or_landmark.ilike.%${term}%,description.ilike.%${term}%,category.ilike.%${term}%`
+        );
+      }
+    }
+
+    return q;
+  };
+
+  let res = await runWithColumns(
+    isModeratorSession ? '*' : PUBLIC_HAZARD_REPORT_COLUMNS
+  );
+
+  if (
+    res.error &&
+    /permission denied/i.test(res.error.message) &&
+    isModeratorSession
+  ) {
+    res = await runWithColumns(PUBLIC_HAZARD_REPORT_COLUMNS);
+  }
+
+  if (
+    res.error &&
+    (res.error.code === '42703' || /column|schema cache/i.test(res.error.message))
+  ) {
+    res = await runWithColumns(BASE_PUBLIC_HAZARD_REPORT_COLUMNS);
+  }
+
+  return res;
+}
+
 /**
  * Fetches lightweight, indexed slices optimized for Supabase Free Tier:
- * - Latest 60 hazard reports (RLS hides dismissed reports from public users while allowing moderators/admins to audit them)
- * - Evacuation centers ordered by barangay
+ * - Latest 60 hazard reports (public queries omit contact_optional and moderator audit columns)
+ * - Evacuation centers ordered by city & barangay
  * - Active advisories ordered by recency
  */
 export async function fetchAllLiveData(): Promise<LiveDataBundle | null> {
@@ -101,17 +179,16 @@ export async function fetchAllLiveData(): Promise<LiveDataBundle | null> {
   if (!supabase) return null;
 
   const [reportsRes, centersRes, advisoriesRes] = await Promise.all([
-    supabase
-      .from('hazard_reports')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(60),
+    selectHazardReportsQuery(supabase, {
+      offset: 0,
+      limit: REPORTS_PAGE_SIZE,
+    }),
     supabase
       .from('evacuation_centers')
       .select('*')
       .order('city', { ascending: true })
       .order('barangay', { ascending: true })
-      .limit(80),
+      .range(0, CENTERS_PAGE_SIZE),
     supabase
       .from('advisories')
       .select('*')
@@ -130,8 +207,14 @@ export async function fetchAllLiveData(): Promise<LiveDataBundle | null> {
   }
 
   const nowIso = new Date().toISOString();
-  const reports = (reportsRes.data ?? []) as HazardReport[];
-  const centers = (centersRes.data ?? []) as EvacuationCenter[];
+  const rawReports = (reportsRes.data ?? []) as unknown as HazardReport[];
+  const hasMoreReports = rawReports.length > REPORTS_PAGE_SIZE;
+  const reports = rawReports.slice(0, REPORTS_PAGE_SIZE);
+
+  const rawCenters = (centersRes.data ?? []) as EvacuationCenter[];
+  const hasMoreCenters = rawCenters.length > CENTERS_PAGE_SIZE;
+  const centers = rawCenters.slice(0, CENTERS_PAGE_SIZE);
+
   const advisories = (advisoriesRes.data ?? []) as Advisory[];
 
   await Promise.all([
@@ -145,8 +228,82 @@ export async function fetchAllLiveData(): Promise<LiveDataBundle | null> {
     reports,
     centers,
     advisories,
+    hasMoreReports,
+    hasMoreCenters,
     fromSupabase: true,
     syncedAt: nowIso,
+  };
+}
+
+export async function fetchHazardReportsPage(options: {
+  municipality?: string;
+  query?: string;
+  offset?: number;
+  limit?: number;
+}): Promise<{ reports: HazardReport[]; hasMore: boolean }> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { reports: [], hasMore: false };
+  }
+  const limit = options.limit ?? REPORTS_PAGE_SIZE;
+  const res = await selectHazardReportsQuery(supabase, {
+    ...options,
+    limit,
+  });
+  if (res.error) {
+    throw new Error(res.error.message);
+  }
+  const rows = (res.data ?? []) as unknown as HazardReport[];
+  return {
+    reports: rows.slice(0, limit),
+    hasMore: rows.length > limit,
+  };
+}
+
+export async function fetchEvacuationCentersPage(options: {
+  municipality?: string;
+  query?: string;
+  offset?: number;
+  limit?: number;
+}): Promise<{ centers: EvacuationCenter[]; hasMore: boolean }> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { centers: [], hasMore: false };
+  }
+  const limit = options.limit ?? CENTERS_PAGE_SIZE;
+  const offset = options.offset ?? 0;
+
+  let q = supabase
+    .from('evacuation_centers')
+    .select('*')
+    .order('city', { ascending: true })
+    .order('barangay', { ascending: true })
+    .range(offset, offset + limit);
+
+  if (options.municipality && options.municipality !== 'All') {
+    const muni = sanitizePostgrestFilterTerm(options.municipality);
+    if (muni) {
+      q = q.ilike('city', muni);
+    }
+  }
+
+  if (options.query) {
+    const term = sanitizePostgrestFilterTerm(options.query);
+    if (term) {
+      q = q.or(
+        `name.ilike.%${term}%,barangay.ilike.%${term}%,city.ilike.%${term}%,address.ilike.%${term}%`
+      );
+    }
+  }
+
+  const { data, error } = await q;
+  if (error) {
+    throw new Error(error.message);
+  }
+  const rows = (data ?? []) as EvacuationCenter[];
+  return {
+    centers: rows.slice(0, limit),
+    hasMore: rows.length > limit,
   };
 }
 
@@ -196,14 +353,14 @@ export async function submitHazardReport(
     let { data, error } = await supabase
       .from('hazard_reports')
       .insert(extendedPayload)
-      .select()
+      .select(PUBLIC_HAZARD_REPORT_COLUMNS)
       .single();
 
     if (error && (error.code === '42703' || error.message.includes('column'))) {
       ({ data, error } = await supabase
         .from('hazard_reports')
         .insert(basePayload)
-        .select()
+        .select(BASE_PUBLIC_HAZARD_REPORT_COLUMNS)
         .single());
     }
 
@@ -211,7 +368,7 @@ export async function submitHazardReport(
       throw error ?? new Error('Insert failed');
     }
 
-    return { report: data as HazardReport, queued: false };
+    return { report: data as unknown as HazardReport, queued: false };
   } catch {
     // Graceful resilience: never lose an emergency report when signal drops mid-submit
     const queuedItem = await enqueueOfflineReport(draft);
@@ -278,21 +435,21 @@ export async function syncPendingReports(isOffline: boolean): Promise<{
       let { data, error } = await supabase
         .from('hazard_reports')
         .insert(extendedPayload)
-        .select()
+        .select(PUBLIC_HAZARD_REPORT_COLUMNS)
         .single();
 
       if (error && (error.code === '42703' || error.message.includes('column'))) {
         ({ data, error } = await supabase
           .from('hazard_reports')
           .insert(basePayload)
-          .select()
+          .select(BASE_PUBLIC_HAZARD_REPORT_COLUMNS)
           .single());
       }
 
       if (error || !data) {
         remaining.push(item);
       } else {
-        synced.push(data as HazardReport);
+        synced.push(data as unknown as HazardReport);
       }
     } catch {
       remaining.push(item);
@@ -384,34 +541,108 @@ function formatCheckinSupabaseError(err: unknown): string {
   return raw;
 }
 
-export async function fetchSafetyCheckins(): Promise<{
+export async function fetchSafetyCheckins(options?: {
+  offset?: number;
+  limit?: number;
+}): Promise<{
   checkins: SafetyCheckin[] | null;
+  hasMore: boolean;
   error: string | null;
 }> {
   const supabase = getSupabaseClient();
   if (!supabase) {
     return {
       checkins: null,
+      hasMore: false,
       error: 'Supabase environment variables are not configured in this preview.',
     };
   }
+
+  const limit = options?.limit ?? CHECKINS_PAGE_SIZE;
+  const offset = options?.offset ?? 0;
 
   const { data, error } = await supabase
     .from('safety_checkins')
     .select('*')
     .order('created_at', { ascending: false })
-    .limit(60);
+    .range(offset, offset + limit);
 
   if (error) {
     return {
       checkins: null,
+      hasMore: false,
       error: formatCheckinSupabaseError(error),
     };
   }
 
-  const checkins = (data ?? []) as SafetyCheckin[];
-  await saveCachedCheckins(checkins);
-  return { checkins, error: null };
+  const rawRows = (data ?? []) as SafetyCheckin[];
+  const hasMore = rawRows.length > limit;
+  const checkins = rawRows.slice(0, limit);
+  if (offset === 0) {
+    await saveCachedCheckins(checkins);
+  }
+  return { checkins, hasMore, error: null };
+}
+
+export async function searchSafetyCheckinsRemote(options: {
+  query?: string;
+  municipality?: string;
+  offset?: number;
+  limit?: number;
+}): Promise<{
+  checkins: SafetyCheckin[] | null;
+  hasMore: boolean;
+  error: string | null;
+}> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return {
+      checkins: null,
+      hasMore: false,
+      error: null,
+    };
+  }
+
+  const limit = options.limit ?? CHECKINS_PAGE_SIZE;
+  const offset = options.offset ?? 0;
+
+  let q = supabase
+    .from('safety_checkins')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit);
+
+  if (options.municipality && options.municipality !== 'All') {
+    const muni = sanitizePostgrestFilterTerm(options.municipality);
+    if (muni) {
+      q = q.ilike('municipality', muni);
+    }
+  }
+
+  if (options.query) {
+    const term = sanitizePostgrestFilterTerm(options.query);
+    if (term) {
+      q = q.or(
+        `full_name.ilike.%${term}%,barangay.ilike.%${term}%,municipality.ilike.%${term}%,evacuation_center.ilike.%${term}%`
+      );
+    }
+  }
+
+  const { data, error } = await q;
+  if (error) {
+    return {
+      checkins: null,
+      hasMore: false,
+      error: formatCheckinSupabaseError(error),
+    };
+  }
+
+  const rawRows = (data ?? []) as SafetyCheckin[];
+  return {
+    checkins: rawRows.slice(0, limit),
+    hasMore: rawRows.length > limit,
+    error: null,
+  };
 }
 
 export async function submitSafetyCheckin(

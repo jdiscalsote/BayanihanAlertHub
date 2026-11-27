@@ -7,8 +7,11 @@ import {
 } from '@vis.gl/react-google-maps';
 import { Crosshair, MapPin, X } from 'lucide-react';
 import {
+  buildReportFingerprint,
   getRemainingCooldownSeconds,
+  isDuplicateSubmission,
   recordReportSubmissionTimestamp,
+  recordSubmissionFingerprint,
 } from '../services/offlineSync';
 import type {
   FloodLevel,
@@ -74,6 +77,7 @@ export function QuickReportModal({
   const [geocoding, setGeocoding] = useState(false);
   const [geocodeNote, setGeocodeNote] = useState<string | null>(null);
   const [syncVersion, setSyncVersion] = useState(0);
+  const [honeypot, setHoneypot] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -157,6 +161,12 @@ export function QuickReportModal({
     e.preventDefault();
     setError(null);
 
+    if (honeypot.trim().length > 0) {
+      // Bot-trap triggered: silently ignore without touching database
+      onClose();
+      return;
+    }
+
     const cooldown = getRemainingCooldownSeconds();
     if (cooldown > 0) {
       setError(
@@ -182,22 +192,33 @@ export function QuickReportModal({
       return;
     }
 
+    const draftPayload: ReportDraft = {
+      category,
+      severity,
+      region: region.trim(),
+      municipality: municipality.trim(),
+      barangay: barangay.trim(),
+      street_or_landmark: streetOrLandmark.trim(),
+      flood_level: floodLevel,
+      description: description.trim(),
+      contact_optional: contactOptional.trim() || undefined,
+      latitude: pinnedCoords?.lat ?? null,
+      longitude: pinnedCoords?.lng ?? null,
+    };
+
+    const fingerprint = buildReportFingerprint(draftPayload);
+    if (isDuplicateSubmission(fingerprint)) {
+      setError(
+        'A matching hazard report for this street was already submitted within the last 5 minutes.'
+      );
+      return;
+    }
+
     setSubmitting(true);
     try {
-      await onSubmit({
-        category,
-        severity,
-        region: region.trim(),
-        municipality: municipality.trim(),
-        barangay: barangay.trim(),
-        street_or_landmark: streetOrLandmark.trim(),
-        flood_level: floodLevel,
-        description: description.trim(),
-        contact_optional: contactOptional.trim() || undefined,
-        latitude: pinnedCoords?.lat ?? null,
-        longitude: pinnedCoords?.lng ?? null,
-      });
+      await onSubmit(draftPayload);
       recordReportSubmissionTimestamp();
+      recordSubmissionFingerprint(fingerprint);
       setStreetOrLandmark('');
       setDescription('');
       setContactOptional('');
@@ -249,6 +270,18 @@ export function QuickReportModal({
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+          <div aria-hidden="true" className="sr-only">
+            <label htmlFor="report-company-site">Company Website</label>
+            <input
+              id="report-company-site"
+              type="text"
+              name="website"
+              tabIndex={-1}
+              autoComplete="off"
+              value={honeypot}
+              onChange={(e) => setHoneypot(e.target.value)}
+            />
+          </div>
           {error && (
             <div
               role="alert"
@@ -471,6 +504,9 @@ export function QuickReportModal({
               placeholder="e.g. 0917-XXX-XXXX (leave blank if reporting road/power only)"
               className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-900 focus:outline-none"
             />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Privacy protection: callback numbers are visible only to verified barangay responders &amp; admins and are hidden from the public feed.
+            </p>
           </div>
 
           <div className="flex items-center justify-end gap-3 border-t border-slate-200 pt-4">

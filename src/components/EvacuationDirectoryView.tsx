@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   CheckCircle2,
   ExternalLink,
@@ -11,6 +11,7 @@ import {
   Users,
   XCircle,
 } from 'lucide-react';
+import { fetchEvacuationCentersPage } from '../services/supabaseClient';
 import type {
   EvacuationCenter,
   EvacuationStatus,
@@ -31,7 +32,10 @@ interface EvacuationDirectoryViewProps {
   usingSupabase: boolean;
   supabaseConfigured: boolean;
   lastSyncError: string | null;
+  hasMoreCenters?: boolean;
+  loadingMoreCenters?: boolean;
   onRefresh: () => void;
+  onLoadMoreCenters?: () => void;
 }
 
 type StatusFilter = 'All' | EvacuationStatus;
@@ -86,20 +90,81 @@ export function EvacuationDirectoryView({
   usingSupabase,
   supabaseConfigured,
   lastSyncError,
+  hasMoreCenters = false,
+  loadingMoreCenters = false,
   onRefresh,
+  onLoadMoreCenters,
 }: EvacuationDirectoryViewProps) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
   const [selectedMunicipality, setSelectedMunicipality] = useState<string>('All');
   const [query, setQuery] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
   const [routeCenterId, setRouteCenterId] = useState<string | null>(null);
+  const [remoteCenters, setRemoteCenters] = useState<EvacuationCenter[] | null>(
+    null
+  );
+  const [searchingRemote, setSearchingRemote] = useState(false);
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (
+      (trimmed.length < 2 && selectedMunicipality === 'All') ||
+      isOffline ||
+      !supabaseConfigured
+    ) {
+      setRemoteCenters(null);
+      setSearchingRemote(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSearchingRemote(true);
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await fetchEvacuationCentersPage({
+            municipality: selectedMunicipality,
+            query: trimmed || undefined,
+            limit: 80,
+          });
+          if (!cancelled) {
+            setRemoteCenters(res.centers);
+          }
+        } catch {
+          if (!cancelled) {
+            setRemoteCenters(null);
+          }
+        } finally {
+          if (!cancelled) {
+            setSearchingRemote(false);
+          }
+        }
+      })();
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query, selectedMunicipality, isOffline, supabaseConfigured]);
+
+  const mergedCenters = useMemo(() => {
+    if (!remoteCenters) return centers;
+    const map = new Map<string, EvacuationCenter>();
+    for (const c of [...remoteCenters, ...centers]) {
+      if (!map.has(c.id)) {
+        map.set(c.id, c);
+      }
+    }
+    return Array.from(map.values());
+  }, [centers, remoteCenters]);
 
   const availableMunicipalities = Array.from(
-    new Set(centers.map((c) => c.city).filter(Boolean))
+    new Set(mergedCenters.map((c) => c.city).filter(Boolean))
   ).sort((a, b) => a.localeCompare(b));
 
   const normalized = query.trim().toLowerCase();
-  const filtered = centers.filter((c) => {
+  const filtered = mergedCenters.filter((c) => {
     if (selectedMunicipality !== 'All' && c.city !== selectedMunicipality) {
       return false;
     }
@@ -402,6 +467,26 @@ export function EvacuationDirectoryView({
               </article>
             );
           })}
+        </div>
+      )}
+
+      {(searchingRemote || (hasMoreCenters && onLoadMoreCenters && !isOffline)) && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+          <span>
+            {searchingRemote
+              ? 'Searching nationwide shelter directory...'
+              : 'Showing loaded evacuation centers.'}
+          </span>
+          {hasMoreCenters && onLoadMoreCenters && !isOffline && (
+            <button
+              type="button"
+              onClick={onLoadMoreCenters}
+              disabled={loadingMoreCenters}
+              className="cursor-pointer rounded-md border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+            >
+              {loadingMoreCenters ? 'Loading more shelters...' : 'Load More Shelters'}
+            </button>
+          )}
         </div>
       )}
     </div>

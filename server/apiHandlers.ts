@@ -28,6 +28,51 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const rateLimitStore = new Map<string, number[]>();
+const MAX_RATE_LIMIT_KEYS = 2000;
+
+export function checkRateLimit(
+  bucketKey: string,
+  maxRequests: number,
+  windowMs: number
+): { allowed: boolean; retryAfterSeconds: number } {
+  const now = Date.now();
+  const cutoff = now - windowMs;
+
+  if (rateLimitStore.size > MAX_RATE_LIMIT_KEYS) {
+    for (const [k, timestamps] of rateLimitStore.entries()) {
+      const active = timestamps.filter((t) => t > cutoff);
+      if (active.length === 0) {
+        rateLimitStore.delete(k);
+      } else {
+        rateLimitStore.set(k, active);
+      }
+    }
+  }
+
+  const recent = (rateLimitStore.get(bucketKey) ?? []).filter(
+    (t) => t > cutoff
+  );
+
+  if (recent.length >= maxRequests) {
+    const oldest = recent[0] ?? now;
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil((oldest + windowMs - now) / 1000)
+    );
+    rateLimitStore.set(bucketKey, recent);
+    return { allowed: false, retryAfterSeconds };
+  }
+
+  recent.push(now);
+  rateLimitStore.set(bucketKey, recent);
+  return { allowed: true, retryAfterSeconds: 0 };
+}
+
+export function clearRateLimitStoreForTests(): void {
+  rateLimitStore.clear();
+}
+
 export function getGeminiClient(): GoogleGenAI | null {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
@@ -405,7 +450,22 @@ export function handleHealth(): ApiHandlerResult {
 }
 
 
-export async function handleAssistantChat(rawBody: unknown): Promise<ApiHandlerResult> {
+export async function handleAssistantChat(
+  rawBody: unknown,
+  clientIp = 'unknown'
+): Promise<ApiHandlerResult> {
+  const rate = checkRateLimit(`assistant:${clientIp}`, 15, 60_000);
+  if (!rate.allowed) {
+    return {
+      status: 429,
+      body: {
+        error: `Too many assistant requests. Please wait ${rate.retryAfterSeconds}s before trying again.`,
+        code: 'RATE_LIMITED',
+        retryAfterSeconds: rate.retryAfterSeconds,
+      },
+    };
+  }
+
   const ai = getGeminiClient();
   if (!ai) {
     return {
@@ -517,8 +577,21 @@ export async function handleAssistantChat(rawBody: unknown): Promise<ApiHandlerR
 
 export async function handleReverseGeocode(
   latRaw: unknown,
-  lngRaw: unknown
+  lngRaw: unknown,
+  clientIp = 'unknown'
 ): Promise<ApiHandlerResult> {
+  const rate = checkRateLimit(`geocode:${clientIp}`, 30, 60_000);
+  if (!rate.allowed) {
+    return {
+      status: 429,
+      body: {
+        error: `Too many location lookup requests. Please wait ${rate.retryAfterSeconds}s and try again.`,
+        code: 'RATE_LIMITED',
+        retryAfterSeconds: rate.retryAfterSeconds,
+      },
+    };
+  }
+
   const lat = Number(latRaw);
   const lng = Number(lngRaw);
 
