@@ -9,9 +9,12 @@ import type {
   NewEvacuationCenterDraft,
   ReportDraft,
   ReportStatus,
+  ResponderCreateDraft,
+  ResponderUpdateDraft,
   SafetyCheckin,
   SafetyCheckinDraft,
 } from '../types/alert';
+import { ApiClientError, safeFetchJson } from '../utils/apiClient';
 import {
   enqueueOfflineCheckin,
   enqueueOfflineReport,
@@ -824,7 +827,7 @@ export async function deleteHazardReport(reportId: string): Promise<void> {
   if (error) throw new Error(error.message);
   if (!data) {
     throw new Error(
-      'Database delete affected 0 rows. Confirm your moderator account has DELETE permissions for this municipality.'
+      'Database delete affected 0 rows. Only admin accounts have DELETE permissions.'
     );
   }
 }
@@ -843,7 +846,7 @@ export async function deleteEvacuationCenter(centerId: string): Promise<void> {
   if (error) throw new Error(error.message);
   if (!data) {
     throw new Error(
-      'Database delete affected 0 rows. Confirm your moderator account has DELETE permissions for this municipality.'
+      'Database delete affected 0 rows. Only admin accounts have DELETE permissions.'
     );
   }
 }
@@ -862,7 +865,7 @@ export async function deleteOfficialAdvisory(advisoryId: string): Promise<void> 
   if (error) throw new Error(error.message);
   if (!data) {
     throw new Error(
-      'Database delete affected 0 rows. Confirm your moderator account has DELETE permissions for this municipality.'
+      'Database delete affected 0 rows. Only admin accounts have DELETE permissions.'
     );
   }
 }
@@ -881,7 +884,155 @@ export async function deleteSafetyCheckin(checkinId: string): Promise<void> {
   if (error) throw new Error(error.message);
   if (!data) {
     throw new Error(
-      'Database delete affected 0 rows. Confirm your moderator account has DELETE permissions for this municipality.'
+      'Database delete affected 0 rows. Only admin accounts have DELETE permissions.'
     );
   }
+}
+
+async function getAccessToken(): Promise<string> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    throw new Error('Supabase is not configured.');
+  }
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) {
+    throw new Error('Responder session expired. Please sign in again.');
+  }
+  return token;
+}
+
+export async function changeOwnModeratorPassword(
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    throw new Error('Supabase is not configured.');
+  }
+  if (newPassword.length < 8) {
+    throw new Error('New password must be at least 8 characters long.');
+  }
+
+  const { data: sessionData } = await supabase.auth.getSession();
+  const email = sessionData.session?.user?.email;
+  if (!email) {
+    throw new Error('Active responder session email not found. Please sign in again.');
+  }
+
+  // Verify current password before applying change
+  const { error: verifyErr } = await supabase.auth.signInWithPassword({
+    email,
+    password: currentPassword,
+  });
+  if (verifyErr) {
+    throw new Error('Current password is incorrect.');
+  }
+
+  const { error: updateErr } = await supabase.auth.updateUser({
+    password: newPassword,
+  });
+  if (updateErr) {
+    throw new Error(updateErr.message);
+  }
+}
+
+export async function fetchAllResponders(): Promise<{
+  responders: ModeratorProfile[];
+  serviceRoleMissing?: boolean;
+  warning?: string;
+}> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { responders: [] };
+  }
+
+  const token = await getAccessToken();
+  try {
+    const res = await safeFetchJson<{ responders: ModeratorProfile[] }>(
+      '/api/admin/responders',
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+    return { responders: res.responders || [] };
+  } catch (err) {
+    if (
+      err instanceof ApiClientError &&
+      (err.code === 'SERVICE_ROLE_MISSING' ||
+        err.code === 'INVALID_SERVICE_ROLE_KEY')
+    ) {
+      // Read existing profiles via admin RLS policy while noting server key is needed for Auth CRUD
+      const { data, error } = await supabase
+        .from('moderator_profiles')
+        .select('*')
+        .order('municipality_assigned', { ascending: true })
+        .order('full_name', { ascending: true });
+
+      if (!error && Array.isArray(data)) {
+        return {
+          responders: data as ModeratorProfile[],
+          serviceRoleMissing: true,
+          warning: err.message,
+        };
+      }
+      return {
+        responders: [],
+        serviceRoleMissing: true,
+        warning: err.message,
+      };
+    }
+    throw err;
+  }
+}
+
+export async function createResponderAccount(
+  draft: ResponderCreateDraft
+): Promise<{ responder: ModeratorProfile; generatedPassword: string }> {
+  const token = await getAccessToken();
+  return safeFetchJson<{
+    responder: ModeratorProfile;
+    generatedPassword: string;
+  }>('/api/admin/responders', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(draft),
+  });
+}
+
+export async function updateResponderAccount(
+  id: string,
+  draft: ResponderUpdateDraft
+): Promise<{ responder: ModeratorProfile; generatedPassword?: string }> {
+  const token = await getAccessToken();
+  return safeFetchJson<{
+    responder: ModeratorProfile;
+    generatedPassword?: string;
+  }>('/api/admin/responders', {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ id, ...draft }),
+  });
+}
+
+export async function deleteResponderAccount(id: string): Promise<void> {
+  const token = await getAccessToken();
+  await safeFetchJson<{ deletedId: string }>(
+    `/api/admin/responders?id=${encodeURIComponent(id)}`,
+    {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
 }

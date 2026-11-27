@@ -13,6 +13,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- Verified Barangay Moderators & DRRMO Responders (linked to auth.users)
 CREATE TABLE IF NOT EXISTS public.moderator_profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  email TEXT NOT NULL DEFAULT '',
   full_name TEXT NOT NULL CHECK (char_length(full_name) BETWEEN 2 AND 120),
   role TEXT NOT NULL CHECK (role IN ('moderator', 'admin')) DEFAULT 'moderator',
   barangay_assigned TEXT NOT NULL DEFAULT 'Quezon City DRRMO',
@@ -93,6 +94,7 @@ CREATE TABLE IF NOT EXISTS public.safety_checkins (
 
 -- Idempotent column upgrades for existing deployments
 ALTER TABLE public.moderator_profiles
+  ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT '',
   ADD COLUMN IF NOT EXISTS municipality_assigned TEXT NOT NULL DEFAULT 'All Municipalities';
 ALTER TABLE public.evacuation_centers
   ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT 'National Capital Region (NCR)';
@@ -153,6 +155,22 @@ AS $$
     FROM public.moderator_profiles mp
     WHERE mp.id = auth.uid()
       AND mp.role IN ('moderator', 'admin')
+  );
+$$;
+
+-- Check whether current authenticated user is an admin
+CREATE OR REPLACE FUNCTION public.is_admin_user()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.moderator_profiles mp
+    WHERE mp.id = auth.uid()
+      AND mp.role = 'admin'
   );
 $$;
 
@@ -256,22 +274,30 @@ ALTER TABLE public.hazard_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.advisories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.safety_checkins ENABLE ROW LEVEL SECURITY;
 
-GRANT USAGE ON SCHEMA public TO anon, authenticated;
-GRANT SELECT ON public.moderator_profiles TO authenticated;
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moderator_profiles TO authenticated;
 GRANT SELECT ON public.evacuation_centers, public.hazard_reports, public.advisories, public.safety_checkins TO anon, authenticated;
 GRANT INSERT ON public.hazard_reports, public.safety_checkins TO anon, authenticated;
 GRANT UPDATE, DELETE ON public.hazard_reports, public.evacuation_centers, public.advisories TO authenticated;
 GRANT DELETE ON public.safety_checkins TO authenticated;
 GRANT INSERT ON public.evacuation_centers, public.advisories TO authenticated;
 
--- moderator_profiles: users can only read their own moderator profile
+-- moderator_profiles: users read own profile; admins manage all responder assignments
 DROP POLICY IF EXISTS "Moderators read own profile" ON public.moderator_profiles;
 CREATE POLICY "Moderators read own profile"
   ON public.moderator_profiles FOR SELECT
   TO authenticated
-  USING (auth.uid() = id);
+  USING (auth.uid() = id OR public.is_admin_user());
 
--- evacuation_centers: public read; moderators update/insert/delete
+DROP POLICY IF EXISTS "Admins manage moderator profiles" ON public.moderator_profiles;
+CREATE POLICY "Admins manage moderator profiles"
+  ON public.moderator_profiles FOR ALL
+  TO authenticated
+  USING (public.is_admin_user())
+  WITH CHECK (public.is_admin_user());
+
+-- evacuation_centers: public read; moderators insert/update; admins only delete
 DROP POLICY IF EXISTS "Public read evacuation centers" ON public.evacuation_centers;
 CREATE POLICY "Public read evacuation centers"
   ON public.evacuation_centers FOR SELECT
@@ -279,13 +305,26 @@ CREATE POLICY "Public read evacuation centers"
   USING (true);
 
 DROP POLICY IF EXISTS "Moderators manage evacuation centers" ON public.evacuation_centers;
-CREATE POLICY "Moderators manage evacuation centers"
-  ON public.evacuation_centers FOR ALL
+DROP POLICY IF EXISTS "Moderators insert evacuation centers" ON public.evacuation_centers;
+CREATE POLICY "Moderators insert evacuation centers"
+  ON public.evacuation_centers FOR INSERT
+  TO authenticated
+  WITH CHECK (public.can_manage_municipality(city));
+
+DROP POLICY IF EXISTS "Moderators update evacuation centers" ON public.evacuation_centers;
+CREATE POLICY "Moderators update evacuation centers"
+  ON public.evacuation_centers FOR UPDATE
   TO authenticated
   USING (public.can_manage_municipality(city))
   WITH CHECK (public.can_manage_municipality(city));
 
--- hazard_reports: public read non-dismissed; public insert unverified active; moderators update/delete
+DROP POLICY IF EXISTS "Admins delete evacuation centers" ON public.evacuation_centers;
+CREATE POLICY "Admins delete evacuation centers"
+  ON public.evacuation_centers FOR DELETE
+  TO authenticated
+  USING (public.is_admin_user());
+
+-- hazard_reports: public read non-dismissed; public insert unverified active; moderators update; admins only delete
 DROP POLICY IF EXISTS "Public read active and resolved reports" ON public.hazard_reports;
 CREATE POLICY "Public read active and resolved reports"
   ON public.hazard_reports FOR SELECT
@@ -311,12 +350,13 @@ CREATE POLICY "Moderators update hazard reports"
   WITH CHECK (public.can_manage_municipality(municipality));
 
 DROP POLICY IF EXISTS "Moderators delete hazard reports" ON public.hazard_reports;
-CREATE POLICY "Moderators delete hazard reports"
+DROP POLICY IF EXISTS "Admins delete hazard reports" ON public.hazard_reports;
+CREATE POLICY "Admins delete hazard reports"
   ON public.hazard_reports FOR DELETE
   TO authenticated
-  USING (public.can_manage_municipality(municipality));
+  USING (public.is_admin_user());
 
--- advisories: public read active advisories; moderators manage all
+-- advisories: public read active advisories; moderators insert/update; admins only delete
 DROP POLICY IF EXISTS "Public read active advisories" ON public.advisories;
 CREATE POLICY "Public read active advisories"
   ON public.advisories FOR SELECT
@@ -324,13 +364,26 @@ CREATE POLICY "Public read active advisories"
   USING (is_active = true OR public.can_manage_municipality(municipality));
 
 DROP POLICY IF EXISTS "Moderators manage advisories" ON public.advisories;
-CREATE POLICY "Moderators manage advisories"
-  ON public.advisories FOR ALL
+DROP POLICY IF EXISTS "Moderators insert advisories" ON public.advisories;
+CREATE POLICY "Moderators insert advisories"
+  ON public.advisories FOR INSERT
+  TO authenticated
+  WITH CHECK (public.can_manage_municipality(municipality));
+
+DROP POLICY IF EXISTS "Moderators update advisories" ON public.advisories;
+CREATE POLICY "Moderators update advisories"
+  ON public.advisories FOR UPDATE
   TO authenticated
   USING (public.can_manage_municipality(municipality))
   WITH CHECK (public.can_manage_municipality(municipality));
 
--- safety_checkins: public read & insert for family person-finder; moderators delete
+DROP POLICY IF EXISTS "Admins delete advisories" ON public.advisories;
+CREATE POLICY "Admins delete advisories"
+  ON public.advisories FOR DELETE
+  TO authenticated
+  USING (public.is_admin_user());
+
+-- safety_checkins: public read & insert for family person-finder; admins only delete
 DROP POLICY IF EXISTS "Public read safety check-ins" ON public.safety_checkins;
 CREATE POLICY "Public read safety check-ins"
   ON public.safety_checkins FOR SELECT
@@ -344,10 +397,11 @@ CREATE POLICY "Public insert safety check-ins"
   WITH CHECK (true);
 
 DROP POLICY IF EXISTS "Moderators delete safety check-ins" ON public.safety_checkins;
-CREATE POLICY "Moderators delete safety check-ins"
+DROP POLICY IF EXISTS "Admins delete safety check-ins" ON public.safety_checkins;
+CREATE POLICY "Admins delete safety check-ins"
   ON public.safety_checkins FOR DELETE
   TO authenticated
-  USING (public.can_manage_municipality(municipality));
+  USING (public.is_admin_user());
 
 -- ----------------------------------------------------------------------------
 -- 5. SELECTIVE REALTIME PUBLICATION (FREE-TIER FRIENDLY)

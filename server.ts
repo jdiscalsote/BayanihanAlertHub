@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
+  handleAdminResponders,
   handleAssistantChat,
   handleHealth,
   handleReverseGeocode,
@@ -49,6 +50,19 @@ async function startServer() {
   // 3. Reverse Geocoding Server Proxy (prevents browser CORS issues & legacy JS Geocoder usage)
   app.get('/api/geocode/reverse', async (req: Request, res: Response) => {
     const result = await handleReverseGeocode(req.query.lat, req.query.lng);
+    res.status(result.status).json(result.body);
+  });
+
+  // 4. Admin-only Municipality Responder Management
+  app.all('/api/admin/responders', async (req: Request, res: Response) => {
+    const queryId =
+      typeof req.query.id === 'string' ? req.query.id : undefined;
+    const result = await handleAdminResponders({
+      method: req.method,
+      authHeader: req.headers.authorization,
+      queryId,
+      body: req.body,
+    });
     res.status(result.status).json(result.body);
   });
 

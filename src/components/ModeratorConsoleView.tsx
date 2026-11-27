@@ -1,16 +1,32 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
+  Copy,
+  Eye,
+  EyeOff,
+  KeyRound,
   LogOut,
+  Pencil,
   Plus,
+  RefreshCw,
   Search,
   Shield,
   ShieldCheck,
   Trash2,
+  UserCog,
   Users,
 } from 'lucide-react';
-import { isSupabaseConfigured, isUuid } from '../services/supabaseClient';
+import {
+  changeOwnModeratorPassword,
+  createResponderAccount,
+  deleteResponderAccount,
+  fetchAllResponders,
+  isSupabaseConfigured,
+  isUuid,
+  updateResponderAccount,
+} from '../services/supabaseClient';
 import type {
   Advisory,
   AdvisorySeverity,
@@ -25,6 +41,56 @@ import type {
 import { formatRelativeTime } from '../utils/formatters';
 import { LocationSelector } from './LocationSelector';
 
+const PREVIEW_DEMO_RESPONDERS: ModeratorProfile[] = [
+  {
+    id: 'demo-moderator',
+    email: 'admin@bayanihan.local',
+    full_name: 'Capt. Ramon Villanueva',
+    role: 'admin',
+    municipality_assigned: 'All Municipalities',
+    barangay_assigned: 'Brgy. Tatalon DRRMO (Preview)',
+    created_at: new Date(Date.now() - 86400_000 * 14).toISOString(),
+  },
+  {
+    id: 'demo-qc-responder',
+    email: 'qc.responder@bayanihan.local',
+    full_name: 'Engr. Liza Mendoza',
+    role: 'moderator',
+    municipality_assigned: 'Quezon City',
+    barangay_assigned: 'QCDRRMO Operations Center',
+    created_at: new Date(Date.now() - 86400_000 * 7).toISOString(),
+  },
+  {
+    id: 'demo-marikina-responder',
+    email: 'marikina.rescue@bayanihan.local',
+    full_name: 'Marco Santos',
+    role: 'moderator',
+    municipality_assigned: 'Marikina City',
+    barangay_assigned: 'Marikina Rescue 161',
+    created_at: new Date(Date.now() - 86400_000 * 3).toISOString(),
+  },
+];
+
+function generateClientPreviewPassword(length = 14): string {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnopqrstuvwxyz';
+  const digits = '23456789';
+  const symbols = '!@#$%&*?';
+  const all = upper + lower + digits + symbols;
+  const arr = new Uint32Array(length);
+  crypto.getRandomValues(arr);
+  const chars = [
+    upper[arr[0] % upper.length],
+    lower[arr[1] % lower.length],
+    digits[arr[2] % digits.length],
+    symbols[arr[3] % symbols.length],
+  ];
+  for (let i = 4; i < length; i += 1) {
+    chars.push(all[arr[i] % all.length]);
+  }
+  return chars.join('');
+}
+
 interface ModeratorConsoleViewProps {
   moderator: ModeratorProfile | null;
   reports: HazardReport[];
@@ -35,6 +101,7 @@ interface ModeratorConsoleViewProps {
   onSignIn: (email: string, password: string) => Promise<void>;
   onDemoSignIn: () => void;
   onSignOut: () => Promise<void>;
+  onOwnProfileUpdated?: (updated: ModeratorProfile) => void;
   onModerateReport: (
     reportId: string,
     updates: { is_verified?: boolean; status?: ReportStatus }
@@ -64,7 +131,13 @@ interface ModeratorConsoleViewProps {
   onRefreshLiveData: () => Promise<void>;
 }
 
-type ConsoleTab = 'triage' | 'shelters' | 'advisories' | 'checkins';
+type ConsoleTab =
+  | 'triage'
+  | 'shelters'
+  | 'advisories'
+  | 'checkins'
+  | 'responders'
+  | 'account';
 
 export function ModeratorConsoleView({
   moderator,
@@ -76,6 +149,7 @@ export function ModeratorConsoleView({
   onSignIn,
   onDemoSignIn,
   onSignOut,
+  onOwnProfileUpdated,
   onModerateReport,
   onDeleteReport,
   onUpdateCenter,
@@ -136,6 +210,74 @@ export function ModeratorConsoleView({
   const [advBarangay, setAdvBarangay] = useState('Citywide');
   const [advMessage, setAdvMessage] = useState('');
 
+  // Admin Responder Management state
+  const [responders, setResponders] = useState<ModeratorProfile[]>(
+    isSupabaseConfigured ? [] : PREVIEW_DEMO_RESPONDERS
+  );
+  const [loadingResponders, setLoadingResponders] = useState(false);
+  const [respondersWarning, setRespondersWarning] = useState<string | null>(null);
+  const [serviceRoleMissing, setServiceRoleMissing] = useState(false);
+  const [responderSearch, setResponderSearch] = useState('');
+  const [responderMuniFilter, setResponderMuniFilter] = useState('All');
+  const [showCreateResponder, setShowCreateResponder] = useState(false);
+  const [newRespEmail, setNewRespEmail] = useState('');
+  const [newRespName, setNewRespName] = useState('');
+  const [newRespRole, setNewRespRole] = useState<'moderator' | 'admin'>('moderator');
+  const [newRespAllMunis, setNewRespAllMunis] = useState(false);
+  const [newRespRegion, setNewRespRegion] = useState('National Capital Region (NCR)');
+  const [newRespMunicipality, setNewRespMunicipality] = useState('Quezon City');
+  const [newRespBarangay, setNewRespBarangay] = useState('Citywide');
+  const [newRespOffice, setNewRespOffice] = useState('');
+  const [editingResponderId, setEditingResponderId] = useState<string | null>(null);
+  const [editRespName, setEditRespName] = useState('');
+  const [editRespRole, setEditRespRole] = useState<'moderator' | 'admin'>('moderator');
+  const [editRespMunicipality, setEditRespMunicipality] = useState('');
+  const [editRespOffice, setEditRespOffice] = useState('');
+  const [editRespResetPwd, setEditRespResetPwd] = useState(false);
+  const [generatedCredentials, setGeneratedCredentials] = useState<{
+    fullName: string;
+    email: string;
+    role: string;
+    municipality: string;
+    password: string;
+    actionLabel: string;
+  } | null>(null);
+  const [copiedCreds, setCopiedCreds] = useState(false);
+
+  // Self-service password change state (all accounts)
+  const [currentPwd, setCurrentPwd] = useState('');
+  const [newPwd, setNewPwd] = useState('');
+  const [confirmNewPwd, setConfirmNewPwd] = useState('');
+  const [showPasswords, setShowPasswords] = useState(false);
+  const [pwdFeedback, setPwdFeedback] = useState<{
+    tone: 'success' | 'error';
+    text: string;
+  } | null>(null);
+  const [updatingPwd, setUpdatingPwd] = useState(false);
+
+  const loadResponders = useCallback(async () => {
+    if (!moderator || moderator.role !== 'admin') return;
+    if (!isSupabaseConfigured) {
+      return;
+    }
+    setLoadingResponders(true);
+    setRespondersWarning(null);
+    try {
+      const res = await fetchAllResponders();
+      setResponders(res.responders);
+      setServiceRoleMissing(Boolean(res.serviceRoleMissing));
+      if (res.warning) {
+        setRespondersWarning(res.warning);
+      }
+    } catch (err) {
+      setRespondersWarning(
+        err instanceof Error ? err.message : 'Unable to load responders.'
+      );
+    } finally {
+      setLoadingResponders(false);
+    }
+  }, [moderator]);
+
   useEffect(() => {
     const assigned = moderator?.municipality_assigned?.trim();
     if (assigned && assigned !== 'All Municipalities') {
@@ -146,7 +288,16 @@ export function ModeratorConsoleView({
     } else {
       setManagedMunicipality('All');
     }
-  }, [moderator?.id, moderator?.municipality_assigned]);
+    if (moderator?.role !== 'admin' && consoleTab === 'responders') {
+      setConsoleTab('triage');
+    }
+  }, [moderator?.id, moderator?.municipality_assigned, moderator?.role, consoleTab]);
+
+  useEffect(() => {
+    if (moderator?.role === 'admin' && consoleTab === 'responders') {
+      void loadResponders();
+    }
+  }, [moderator?.role, consoleTab, loadResponders]);
 
   async function handleLoginSubmit(e: FormEvent) {
     e.preventDefault();
@@ -193,6 +344,9 @@ export function ModeratorConsoleView({
     successMessage: string,
     label = 'Delete'
   ) {
+    if (moderator?.role !== 'admin') {
+      return null;
+    }
     if (confirmDeleteKey === deleteKey) {
       return (
         <div className="inline-flex items-center gap-1.5">
@@ -526,6 +680,34 @@ export function ModeratorConsoleView({
           }`}
         >
           Family Check-Ins ({scopedCheckins.length})
+        </button>
+        {moderator.role === 'admin' && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={consoleTab === 'responders'}
+            onClick={() => setConsoleTab('responders')}
+            className={`cursor-pointer rounded-md px-3.5 py-2 text-xs font-semibold transition-colors ${
+              consoleTab === 'responders'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Responders (Admin)
+          </button>
+        )}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={consoleTab === 'account'}
+          onClick={() => setConsoleTab('account')}
+          className={`cursor-pointer rounded-md px-3.5 py-2 text-xs font-semibold transition-colors ${
+            consoleTab === 'account'
+              ? 'bg-white text-slate-900 shadow-xs'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          Account &amp; Password
         </button>
       </div>
 
@@ -1406,6 +1588,931 @@ export function ModeratorConsoleView({
               ))
             )}
           </div>
+        </div>
+      )}
+
+      {/* TAB 5: ADMIN-ONLY RESPONDER MANAGEMENT */}
+      {consoleTab === 'responders' && moderator.role === 'admin' && (
+        <div className="space-y-4">
+          {respondersWarning && (
+            <div
+              role="alert"
+              className="flex flex-wrap items-start gap-2.5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-950"
+            >
+              <AlertTriangle
+                className="mt-0.5 h-4 w-4 shrink-0 text-amber-700"
+                aria-hidden="true"
+              />
+              <span>{respondersWarning}</span>
+            </div>
+          )}
+
+          {generatedCredentials && (
+            <div
+              role="status"
+              className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 text-xs text-emerald-950"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="font-display text-sm font-bold text-emerald-950">
+                    {generatedCredentials.actionLabel} — {generatedCredentials.fullName}
+                  </p>
+                  <p className="mt-0.5 text-emerald-900">
+                    Share this generated default password securely. The responder can change it anytime under <strong>Account &amp; Password</strong>.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const summary = [
+                        `Bayanihan Alert Hub Responder Access`,
+                        `Name: ${generatedCredentials.fullName}`,
+                        `Email: ${generatedCredentials.email}`,
+                        `Role: ${generatedCredentials.role}`,
+                        `Assigned Municipality: ${generatedCredentials.municipality}`,
+                        `Temporary Password: ${generatedCredentials.password}`,
+                      ].join('\n');
+                      try {
+                        await navigator.clipboard.writeText(summary);
+                        setCopiedCreds(true);
+                        setTimeout(() => setCopiedCreds(false), 2500);
+                      } catch {
+                        // Clipboard blocked
+                      }
+                    }}
+                    className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-emerald-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-900"
+                  >
+                    {copiedCreds ? (
+                      <>
+                        <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Copied Credentials</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Copy Login Details</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGeneratedCredentials(null)}
+                    className="cursor-pointer rounded-md border border-emerald-300 bg-white px-2.5 py-1.5 text-xs font-medium text-emerald-900 hover:bg-emerald-100"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-3 grid gap-2 rounded-md border border-emerald-200 bg-white p-3 font-mono text-xs sm:grid-cols-3">
+                <div>
+                  <span className="text-slate-500">Email:</span>{' '}
+                  <span className="font-semibold text-slate-900">
+                    {generatedCredentials.email}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500">Municipality:</span>{' '}
+                  <span className="font-semibold text-slate-900">
+                    {generatedCredentials.municipality}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500">Default Password:</span>{' '}
+                  <span className="select-all font-bold text-emerald-800">
+                    {generatedCredentials.password}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-col justify-between gap-3 rounded-lg border border-slate-200 bg-white p-4 sm:flex-row sm:items-center">
+            <div className="flex items-center gap-2">
+              <UserCog className="h-4 w-4 text-slate-800" aria-hidden="true" />
+              <div>
+                <h2 className="font-display text-sm font-semibold text-slate-900">
+                  Assigned Responders by Municipality ({responders.length})
+                </h2>
+                <p className="text-xs text-slate-600">
+                  Admin-only directory. Create responders with auto-generated default passwords, edit jurisdiction, or revoke access.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {isSupabaseConfigured && (
+                <button
+                  type="button"
+                  onClick={() => void loadResponders()}
+                  disabled={loadingResponders}
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${loadingResponders ? 'animate-spin' : ''}`}
+                    aria-hidden="true"
+                  />
+                  <span>Refresh</span>
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={serviceRoleMissing}
+                onClick={() => setShowCreateResponder((prev) => !prev)}
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+              >
+                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>
+                  {showCreateResponder ? 'Close New Responder Form' : 'Create New Responder'}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {showCreateResponder && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const assignedMuni =
+                  newRespRole === 'admin' && newRespAllMunis
+                    ? 'All Municipalities'
+                    : newRespMunicipality.trim();
+                const officeLabel =
+                  newRespOffice.trim() ||
+                  (newRespBarangay && newRespBarangay !== 'Citywide'
+                    ? `${newRespBarangay} DRRMO`
+                    : `${assignedMuni} DRRMO`);
+
+                if (!newRespEmail.trim() || !newRespName.trim() || !assignedMuni) {
+                  setActionError('Please enter responder email, full name, and municipality.');
+                  return;
+                }
+
+                void runAction(async () => {
+                  if (!isSupabaseConfigured) {
+                    const generatedPassword = generateClientPreviewPassword();
+                    const created: ModeratorProfile = {
+                      id: `demo-${Date.now().toString(36)}`,
+                      email: newRespEmail.trim().toLowerCase(),
+                      full_name: newRespName.trim(),
+                      role: newRespRole,
+                      municipality_assigned: assignedMuni,
+                      barangay_assigned: officeLabel,
+                      created_at: new Date().toISOString(),
+                    };
+                    setResponders((prev) => [created, ...prev]);
+                    setGeneratedCredentials({
+                      fullName: created.full_name,
+                      email: created.email || '',
+                      role: created.role,
+                      municipality: created.municipality_assigned || assignedMuni,
+                      password: generatedPassword,
+                      actionLabel: 'Responder Created (Preview)',
+                    });
+                  } else {
+                    const res = await createResponderAccount({
+                      email: newRespEmail.trim().toLowerCase(),
+                      full_name: newRespName.trim(),
+                      role: newRespRole,
+                      municipality_assigned: assignedMuni,
+                      barangay_assigned: officeLabel,
+                    });
+                    setResponders((prev) => [res.responder, ...prev]);
+                    setGeneratedCredentials({
+                      fullName: res.responder.full_name,
+                      email: res.responder.email || newRespEmail.trim().toLowerCase(),
+                      role: res.responder.role,
+                      municipality:
+                        res.responder.municipality_assigned || assignedMuni,
+                      password: res.generatedPassword,
+                      actionLabel: 'Responder Account Created',
+                    });
+                  }
+
+                  setNewRespEmail('');
+                  setNewRespName('');
+                  setNewRespOffice('');
+                  setNewRespRole('moderator');
+                  setNewRespAllMunis(false);
+                  setShowCreateResponder(false);
+                }, 'Created responder account with generated default password.');
+              }}
+              className="space-y-4 rounded-lg border border-slate-200 bg-white p-5"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="font-display text-sm font-semibold text-slate-900">
+                  Create Municipality Responder / Admin Account
+                </h3>
+                <span className="text-xs text-slate-500">
+                  A secure 14-character default password is automatically generated.
+                </span>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label
+                    htmlFor="new-resp-name"
+                    className="block text-xs font-semibold text-slate-700"
+                  >
+                    Full Name *
+                  </label>
+                  <input
+                    id="new-resp-name"
+                    type="text"
+                    required
+                    minLength={2}
+                    maxLength={120}
+                    value={newRespName}
+                    onChange={(e) => setNewRespName(e.target.value)}
+                    placeholder="e.g. Capt. Elena Bautista"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="new-resp-email"
+                    className="block text-xs font-semibold text-slate-700"
+                  >
+                    Responder Email *
+                  </label>
+                  <input
+                    id="new-resp-email"
+                    type="email"
+                    required
+                    value={newRespEmail}
+                    onChange={(e) => setNewRespEmail(e.target.value)}
+                    placeholder="responder@lgu.gov.ph"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="new-resp-role"
+                    className="block text-xs font-semibold text-slate-700"
+                  >
+                    Access Role *
+                  </label>
+                  <select
+                    id="new-resp-role"
+                    value={newRespRole}
+                    onChange={(e) => {
+                      const nextRole = e.target.value as 'moderator' | 'admin';
+                      setNewRespRole(nextRole);
+                      if (nextRole !== 'admin') setNewRespAllMunis(false);
+                    }}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  >
+                    <option value="moderator">Responder (Assigned Municipality)</option>
+                    <option value="admin">Admin (Nationwide + Responder Mgmt)</option>
+                  </select>
+                </div>
+              </div>
+
+              {newRespRole === 'admin' && (
+                <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={newRespAllMunis}
+                    onChange={(e) => setNewRespAllMunis(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-slate-900"
+                  />
+                  <span>Assign to All Municipalities (Nationwide Admin)</span>
+                </label>
+              )}
+
+              {!(newRespRole === 'admin' && newRespAllMunis) && (
+                <LocationSelector
+                  region={newRespRegion}
+                  municipality={newRespMunicipality}
+                  barangay={newRespBarangay}
+                  allowAllBarangayOption={true}
+                  onChange={(next) => {
+                    setNewRespRegion(next.region);
+                    setNewRespMunicipality(next.municipality);
+                    setNewRespBarangay(next.barangay || 'Citywide');
+                  }}
+                />
+              )}
+
+              <div>
+                <label
+                  htmlFor="new-resp-office"
+                  className="block text-xs font-semibold text-slate-700"
+                >
+                  Assigned Office / Barangay Desk Label (optional)
+                </label>
+                <input
+                  id="new-resp-office"
+                  type="text"
+                  maxLength={120}
+                  value={newRespOffice}
+                  onChange={(e) => setNewRespOffice(e.target.value)}
+                  placeholder="e.g. Marikina CDRRMO Rescue 161 or Brgy. Tatalon Hall"
+                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  disabled={isSaving}
+                  className="cursor-pointer rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                >
+                  {isSaving
+                    ? 'Creating Account...'
+                    : 'Create Responder & Generate Default Password'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateResponder(false)}
+                  className="cursor-pointer rounded-md border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* Filter Responders by Municipality & Search */}
+          {(() => {
+            const respMunicipalities = Array.from(
+              new Set(
+                responders
+                  .map((r) => r.municipality_assigned || 'All Municipalities')
+                  .filter(Boolean)
+              )
+            ).sort((a, b) => a.localeCompare(b));
+
+            const filteredResponders = responders.filter((r) => {
+              const muni = r.municipality_assigned || 'All Municipalities';
+              if (
+                responderMuniFilter !== 'All' &&
+                muni.toLowerCase() !== responderMuniFilter.toLowerCase()
+              ) {
+                return false;
+              }
+              const q = responderSearch.trim().toLowerCase();
+              if (!q) return true;
+              return (
+                r.full_name.toLowerCase().includes(q) ||
+                (r.email || '').toLowerCase().includes(q) ||
+                muni.toLowerCase().includes(q) ||
+                r.barangay_assigned.toLowerCase().includes(q) ||
+                r.role.toLowerCase().includes(q)
+              );
+            });
+
+            return (
+              <div className="space-y-3">
+                <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="relative w-full sm:w-80">
+                    <Search
+                      className="pointer-events-none absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="search"
+                      value={responderSearch}
+                      onChange={(e) => setResponderSearch(e.target.value)}
+                      placeholder="Search responder name, email, office..."
+                      aria-label="Search assigned responders"
+                      className="w-full rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <label
+                      htmlFor="resp-muni-filter"
+                      className="text-xs font-semibold text-slate-600"
+                    >
+                      Municipality
+                    </label>
+                    <select
+                      id="resp-muni-filter"
+                      value={responderMuniFilter}
+                      onChange={(e) => setResponderMuniFilter(e.target.value)}
+                      className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 focus:border-slate-900 focus:outline-none"
+                    >
+                      <option value="All">All ({responders.length})</option>
+                      {respMunicipalities.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white">
+                  {loadingResponders && responders.length === 0 ? (
+                    <p className="px-5 py-8 text-center text-sm text-slate-500">
+                      Loading assigned responders...
+                    </p>
+                  ) : filteredResponders.length === 0 ? (
+                    <p className="px-5 py-8 text-center text-sm text-slate-500">
+                      No responders match your current filter.
+                    </p>
+                  ) : (
+                    filteredResponders.map((resp) => {
+                      const isSelf = resp.id === moderator.id;
+                      const isEditing = editingResponderId === resp.id;
+                      return (
+                        <div key={resp.id} className="p-4 sm:p-5">
+                          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                            <div className="min-w-0 space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-display text-sm font-bold text-slate-900">
+                                  {resp.full_name}
+                                </span>
+                                <span
+                                  className={`rounded px-1.5 py-0.5 text-[11px] font-bold uppercase ${
+                                    resp.role === 'admin'
+                                      ? 'bg-slate-900 text-white'
+                                      : 'bg-emerald-100 text-emerald-800'
+                                  }`}
+                                >
+                                  {resp.role}
+                                </span>
+                                {isSelf && (
+                                  <span className="text-[11px] font-semibold text-sky-700">
+                                    (You)
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-600">
+                                {resp.email ? `${resp.email} · ` : ''}
+                                <strong className="text-slate-800">
+                                  {resp.municipality_assigned || 'All Municipalities'}
+                                </strong>{' '}
+                                · {resp.barangay_assigned}
+                              </p>
+                              {(resp.created_at || resp.last_sign_in_at) && (
+                                <p className="font-mono text-[11px] text-slate-500">
+                                  {resp.created_at
+                                    ? `Added ${formatRelativeTime(resp.created_at)}`
+                                    : ''}
+                                  {resp.last_sign_in_at
+                                    ? ` · Last sign-in ${formatRelativeTime(resp.last_sign_in_at)}`
+                                    : ' · Never signed in yet'}
+                                </p>
+                              )}
+                            </div>
+
+                            {!isEditing && (
+                              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                <button
+                                  type="button"
+                                  disabled={serviceRoleMissing || isSaving}
+                                  onClick={() => {
+                                    setActionError(null);
+                                    setEditingResponderId(resp.id);
+                                    setEditRespName(resp.full_name);
+                                    setEditRespRole(resp.role);
+                                    setEditRespMunicipality(
+                                      resp.municipality_assigned || 'Quezon City'
+                                    );
+                                    setEditRespOffice(resp.barangay_assigned);
+                                    setEditRespResetPwd(false);
+                                  }}
+                                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                                  <span>Modify</span>
+                                </button>
+                                {!isSelf &&
+                                  !serviceRoleMissing &&
+                                  renderDeleteControl(
+                                    `responder:${resp.id}`,
+                                    async () => {
+                                      if (isSupabaseConfigured) {
+                                        await deleteResponderAccount(resp.id);
+                                      }
+                                      setResponders((prev) =>
+                                        prev.filter((r) => r.id !== resp.id)
+                                      );
+                                    },
+                                    `Deleted responder account for ${resp.full_name}.`
+                                  )}
+                              </div>
+                            )}
+                          </div>
+
+                          {isEditing && (
+                            <form
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                if (
+                                  editRespName.trim().length < 2 ||
+                                  editRespMunicipality.trim().length < 2 ||
+                                  editRespOffice.trim().length < 2
+                                ) {
+                                  setActionError(
+                                    'Full name, assigned municipality, and office/barangay are required.'
+                                  );
+                                  return;
+                                }
+                                void runAction(async () => {
+                                  if (!isSupabaseConfigured) {
+                                    const genPwd = editRespResetPwd
+                                      ? generateClientPreviewPassword()
+                                      : undefined;
+                                    const updated: ModeratorProfile = {
+                                      ...resp,
+                                      full_name: editRespName.trim(),
+                                      role: isSelf ? 'admin' : editRespRole,
+                                      municipality_assigned:
+                                        editRespMunicipality.trim(),
+                                      barangay_assigned: editRespOffice.trim(),
+                                    };
+                                    setResponders((prev) =>
+                                      prev.map((r) =>
+                                        r.id === resp.id ? updated : r
+                                      )
+                                    );
+                                    if (isSelf && onOwnProfileUpdated) {
+                                      onOwnProfileUpdated(updated);
+                                    }
+                                    if (genPwd) {
+                                      setGeneratedCredentials({
+                                        fullName: updated.full_name,
+                                        email: updated.email || '',
+                                        role: updated.role,
+                                        municipality:
+                                          updated.municipality_assigned || '',
+                                        password: genPwd,
+                                        actionLabel:
+                                          'Default Password Reset (Preview)',
+                                      });
+                                    }
+                                  } else {
+                                    const res = await updateResponderAccount(
+                                      resp.id,
+                                      {
+                                        full_name: editRespName.trim(),
+                                        role: isSelf ? 'admin' : editRespRole,
+                                        municipality_assigned:
+                                          editRespMunicipality.trim(),
+                                        barangay_assigned: editRespOffice.trim(),
+                                        reset_password: editRespResetPwd,
+                                      }
+                                    );
+                                    setResponders((prev) =>
+                                      prev.map((r) =>
+                                        r.id === resp.id ? res.responder : r
+                                      )
+                                    );
+                                    if (isSelf && onOwnProfileUpdated) {
+                                      onOwnProfileUpdated(res.responder);
+                                    }
+                                    if (res.generatedPassword) {
+                                      setGeneratedCredentials({
+                                        fullName: res.responder.full_name,
+                                        email:
+                                          res.responder.email ||
+                                          resp.email ||
+                                          '',
+                                        role: res.responder.role,
+                                        municipality:
+                                          res.responder.municipality_assigned ||
+                                          '',
+                                        password: res.generatedPassword,
+                                        actionLabel: 'Default Password Reset',
+                                      });
+                                    }
+                                  }
+                                  setEditingResponderId(null);
+                                  setEditRespResetPwd(false);
+                                }, `Updated assignment for ${editRespName.trim()}.`);
+                              }}
+                              className="mt-4 grid gap-3 border-t border-slate-100 pt-4 sm:grid-cols-2"
+                            >
+                              <div>
+                                <label className="block text-xs font-semibold text-slate-700">
+                                  Full Name
+                                </label>
+                                <input
+                                  type="text"
+                                  required
+                                  minLength={2}
+                                  maxLength={120}
+                                  value={editRespName}
+                                  onChange={(e) => setEditRespName(e.target.value)}
+                                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-xs font-semibold text-slate-700">
+                                  Access Role
+                                </label>
+                                <select
+                                  value={isSelf ? 'admin' : editRespRole}
+                                  disabled={isSelf}
+                                  onChange={(e) =>
+                                    setEditRespRole(
+                                      e.target.value as 'moderator' | 'admin'
+                                    )
+                                  }
+                                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50"
+                                >
+                                  <option value="moderator">
+                                    Responder (Assigned Municipality)
+                                  </option>
+                                  <option value="admin">
+                                    Admin (Nationwide + Responder Mgmt)
+                                  </option>
+                                </select>
+                              </div>
+
+                              <div>
+                                <label className="block text-xs font-semibold text-slate-700">
+                                  Assigned Municipality (or &ldquo;All Municipalities&rdquo;)
+                                </label>
+                                <input
+                                  type="text"
+                                  required
+                                  minLength={2}
+                                  maxLength={100}
+                                  value={editRespMunicipality}
+                                  onChange={(e) =>
+                                    setEditRespMunicipality(e.target.value)
+                                  }
+                                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-xs font-semibold text-slate-700">
+                                  Assigned Office / Barangay Desk
+                                </label>
+                                <input
+                                  type="text"
+                                  required
+                                  minLength={2}
+                                  maxLength={120}
+                                  value={editRespOffice}
+                                  onChange={(e) => setEditRespOffice(e.target.value)}
+                                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                />
+                              </div>
+
+                              <div className="sm:col-span-2">
+                                <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-700">
+                                  <input
+                                    type="checkbox"
+                                    checked={editRespResetPwd}
+                                    onChange={(e) =>
+                                      setEditRespResetPwd(e.target.checked)
+                                    }
+                                    className="h-4 w-4 rounded border-slate-300 text-slate-900"
+                                  />
+                                  <span>
+                                    Generate &amp; set a new default password for this responder
+                                  </span>
+                                </label>
+                              </div>
+
+                              <div className="flex items-center gap-2 sm:col-span-2">
+                                <button
+                                  type="submit"
+                                  disabled={isSaving}
+                                  className="cursor-pointer rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                                >
+                                  {isSaving ? 'Saving...' : 'Save Changes'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isSaving}
+                                  onClick={() => {
+                                    setEditingResponderId(null);
+                                    setEditRespResetPwd(false);
+                                  }}
+                                  className="cursor-pointer rounded-md border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </form>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* TAB 6: ACCOUNT & SELF-SERVICE PASSWORD CHANGE (ALL ACCOUNTS) */}
+      {consoleTab === 'account' && (
+        <div className="grid gap-6 lg:grid-cols-12">
+          <div className="rounded-lg border border-slate-200 bg-white p-5 lg:col-span-5">
+            <div className="flex items-center gap-2">
+              <Shield className="h-5 w-5 text-slate-800" aria-hidden="true" />
+              <h2 className="font-display text-base font-semibold text-slate-900">
+                My Responder Profile
+              </h2>
+            </div>
+
+            <dl className="mt-4 space-y-2.5 text-xs">
+              <div className="flex justify-between gap-2 border-b border-slate-100 pb-2">
+                <dt className="font-medium text-slate-500">Full Name</dt>
+                <dd className="font-semibold text-slate-900">
+                  {moderator.full_name}
+                </dd>
+              </div>
+              {moderator.email && (
+                <div className="flex justify-between gap-2 border-b border-slate-100 pb-2">
+                  <dt className="font-medium text-slate-500">Email</dt>
+                  <dd className="font-mono text-slate-900">{moderator.email}</dd>
+                </div>
+              )}
+              <div className="flex justify-between gap-2 border-b border-slate-100 pb-2">
+                <dt className="font-medium text-slate-500">Role</dt>
+                <dd className="font-semibold uppercase text-slate-900">
+                  {moderator.role}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-2 border-b border-slate-100 pb-2">
+                <dt className="font-medium text-slate-500">Municipality Scope</dt>
+                <dd className="font-semibold text-slate-900">
+                  {moderator.municipality_assigned || 'All Municipalities'}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="font-medium text-slate-500">Office / Barangay</dt>
+                <dd className="font-semibold text-slate-900">
+                  {moderator.barangay_assigned}
+                </dd>
+              </div>
+            </dl>
+          </div>
+
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setPwdFeedback(null);
+              if (newPwd.length < 8) {
+                setPwdFeedback({
+                  tone: 'error',
+                  text: 'New password must be at least 8 characters long.',
+                });
+                return;
+              }
+              if (newPwd !== confirmNewPwd) {
+                setPwdFeedback({
+                  tone: 'error',
+                  text: 'New password and confirmation do not match.',
+                });
+                return;
+              }
+              if (currentPwd === newPwd) {
+                setPwdFeedback({
+                  tone: 'error',
+                  text: 'New password must be different from your current password.',
+                });
+                return;
+              }
+
+              setUpdatingPwd(true);
+              try {
+                if (isSupabaseConfigured) {
+                  await changeOwnModeratorPassword(currentPwd, newPwd);
+                }
+                setCurrentPwd('');
+                setNewPwd('');
+                setConfirmNewPwd('');
+                setPwdFeedback({
+                  tone: 'success',
+                  text: isSupabaseConfigured
+                    ? 'Your account password has been updated.'
+                    : 'Password updated for this local preview session.',
+                });
+              } catch (err) {
+                setPwdFeedback({
+                  tone: 'error',
+                  text:
+                    err instanceof Error
+                      ? err.message
+                      : 'Unable to update password.',
+                });
+              } finally {
+                setUpdatingPwd(false);
+              }
+            }}
+            className="space-y-4 rounded-lg border border-slate-200 bg-white p-5 lg:col-span-7"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <KeyRound className="h-5 w-5 text-slate-800" aria-hidden="true" />
+                <h2 className="font-display text-base font-semibold text-slate-900">
+                  Change My Password
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPasswords((prev) => !prev)}
+                className="inline-flex cursor-pointer items-center gap-1 text-xs font-medium text-slate-600 hover:text-slate-900"
+              >
+                {showPasswords ? (
+                  <>
+                    <EyeOff className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Hide</span>
+                  </>
+                ) : (
+                  <>
+                    <Eye className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Show</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600">
+              Available to all responder and admin accounts. If you signed in with an admin-generated default password, update it here right away.
+            </p>
+
+            {pwdFeedback && (
+              <div
+                role={pwdFeedback.tone === 'error' ? 'alert' : 'status'}
+                className={`rounded-md border px-3 py-2 text-xs font-medium ${
+                  pwdFeedback.tone === 'error'
+                    ? 'border-red-200 bg-red-50 text-red-800'
+                    : 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                }`}
+              >
+                {pwdFeedback.text}
+              </div>
+            )}
+
+            <div>
+              <label
+                htmlFor="acct-current-pwd"
+                className="block text-xs font-semibold text-slate-700"
+              >
+                Current Password
+              </label>
+              <input
+                id="acct-current-pwd"
+                type={showPasswords ? 'text' : 'password'}
+                required
+                autoComplete="current-password"
+                value={currentPwd}
+                onChange={(e) => setCurrentPwd(e.target.value)}
+                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor="acct-new-pwd"
+                  className="block text-xs font-semibold text-slate-700"
+                >
+                  New Password (min 8 chars)
+                </label>
+                <input
+                  id="acct-new-pwd"
+                  type={showPasswords ? 'text' : 'password'}
+                  required
+                  minLength={8}
+                  autoComplete="new-password"
+                  value={newPwd}
+                  onChange={(e) => setNewPwd(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="acct-confirm-pwd"
+                  className="block text-xs font-semibold text-slate-700"
+                >
+                  Confirm New Password
+                </label>
+                <input
+                  id="acct-confirm-pwd"
+                  type={showPasswords ? 'text' : 'password'}
+                  required
+                  minLength={8}
+                  autoComplete="new-password"
+                  value={confirmNewPwd}
+                  onChange={(e) => setConfirmNewPwd(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={updatingPwd}
+              className="cursor-pointer rounded-md bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+            >
+              {updatingPwd ? 'Updating Password...' : 'Update Password'}
+            </button>
+          </form>
         </div>
       )}
     </div>

@@ -130,6 +130,24 @@ export interface ModeratorProfile {
   barangay_assigned: string;
   municipality_assigned?: string;
   email?: string;
+  created_at?: string;
+  last_sign_in_at?: string | null;
+}
+
+export interface ResponderCreateDraft {
+  email: string;
+  full_name: string;
+  role: 'moderator' | 'admin';
+  municipality_assigned: string;
+  barangay_assigned: string;
+}
+
+export interface ResponderUpdateDraft {
+  full_name: string;
+  role: 'moderator' | 'admin';
+  municipality_assigned: string;
+  barangay_assigned: string;
+  reset_password?: boolean;
 }
 
 export type HotlineCategory = 'National' | 'Local LGU' | 'Utility & Weather';

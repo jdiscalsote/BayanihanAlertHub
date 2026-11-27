@@ -1,7 +1,12 @@
+import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 const GEMINI_PRIMARY_MODEL = 'gemini-4-hydrogen';
 const GEMINI_FALLBACK_MODEL = 'gemini-3.1-flash-lite';
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export interface GroundedLink {
   title: string;
@@ -662,4 +667,433 @@ export async function handleReverseGeocode(
       body: { error: message },
     };
   }
+}
+
+// ----------------------------------------------------------------------------
+// ADMIN RESPONDER ACCOUNT MANAGEMENT (SERVER-SIDE SERVICE ROLE + JWT ADMIN CHECK)
+// ----------------------------------------------------------------------------
+
+function detectNonServiceRoleKey(key: string): string | null {
+  if (key.startsWith('sb_publishable_')) {
+    return 'publishable key (sb_publishable_...)';
+  }
+  const parts = key.split('.');
+  if (parts.length === 3) {
+    try {
+      const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
+      const payload = JSON.parse(payloadJson) as { role?: string };
+      if (payload.role && payload.role !== 'service_role') {
+        return `JWT with role "${payload.role}"`;
+      }
+    } catch {
+      // Non-JWT or malformed token; let Supabase validate it
+    }
+  }
+  return null;
+}
+
+function getSupabaseAdminClient():
+  | { client: SupabaseClient }
+  | { errorResult: ApiHandlerResult } {
+  const url = (
+    process.env.SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    ''
+  ).trim();
+  const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  if (!url || !serviceRoleKey) {
+    return {
+      errorResult: {
+        status: 503,
+        body: {
+          error:
+            'Server admin key (SUPABASE_SERVICE_ROLE_KEY) is not configured. Add SUPABASE_SERVICE_ROLE_KEY to your server environment variables (Vercel or Settings > Secrets) to create, reset passwords for, or delete responder accounts.',
+          code: 'SERVICE_ROLE_MISSING',
+        },
+      },
+    };
+  }
+
+  const wrongKeyType = detectNonServiceRoleKey(serviceRoleKey);
+  if (wrongKeyType) {
+    return {
+      errorResult: {
+        status: 503,
+        body: {
+          error: `SUPABASE_SERVICE_ROLE_KEY is currently set to a public ${wrongKeyType} instead of your secret service_role key. Copy the "service_role" (or "sb_secret_...") key from Supabase Project Settings -> API Keys and redeploy.`,
+          code: 'INVALID_SERVICE_ROLE_KEY',
+        },
+      },
+    };
+  }
+
+  return {
+    client: createClient(url, serviceRoleKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    }),
+  };
+}
+
+function generateDefaultPassword(length = 14): string {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnopqrstuvwxyz';
+  const digits = '23456789';
+  const symbols = '!@#$%&*?';
+  const all = upper + lower + digits + symbols;
+
+  const chars = [
+    upper[crypto.randomInt(upper.length)],
+    lower[crypto.randomInt(lower.length)],
+    digits[crypto.randomInt(digits.length)],
+    symbols[crypto.randomInt(symbols.length)],
+  ];
+
+  while (chars.length < length) {
+    chars.push(all[crypto.randomInt(all.length)]);
+  }
+
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = crypto.randomInt(i + 1);
+    const tmp = chars[i];
+    chars[i] = chars[j];
+    chars[j] = tmp;
+  }
+
+  return chars.join('');
+}
+
+async function verifyAdminCaller(
+  adminClient: SupabaseClient,
+  authHeader: string | undefined
+): Promise<{ userId: string } | ApiHandlerResult> {
+  const token =
+    typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7).trim()
+      : '';
+
+  if (!token) {
+    return {
+      status: 401,
+      body: { error: 'Authentication required. Sign in as an admin first.' },
+    };
+  }
+
+  const { data: userData, error: userError } =
+    await adminClient.auth.getUser(token);
+  if (userError || !userData?.user) {
+    return {
+      status: 401,
+      body: { error: 'Invalid or expired responder session. Please sign in again.' },
+    };
+  }
+
+  const { data: profile, error: profileError } = await adminClient
+    .from('moderator_profiles')
+    .select('id, role')
+    .eq('id', userData.user.id)
+    .maybeSingle();
+
+  if (profileError) {
+    const isPermDenied = profileError.message
+      .toLowerCase()
+      .includes('permission denied');
+    return {
+      status: 500,
+      body: {
+        error: isPermDenied
+          ? `Permission denied reading moderator_profiles (${profileError.message}). Make sure SUPABASE_SERVICE_ROLE_KEY is your secret service_role key (not the anon key) and run the latest GRANT statements in supabase/schema.sql.`
+          : `Unable to verify admin privileges: ${profileError.message}`,
+      },
+    };
+  }
+
+  if (!profile || profile.role !== 'admin') {
+    return {
+      status: 403,
+      body: { error: 'Admin privileges are required to manage responder accounts.' },
+    };
+  }
+
+  return { userId: userData.user.id };
+}
+
+export async function handleAdminResponders(params: {
+  method: string;
+  authHeader?: string;
+  queryId?: string;
+  body?: unknown;
+}): Promise<ApiHandlerResult> {
+  const adminInit = getSupabaseAdminClient();
+  if ('errorResult' in adminInit) {
+    return adminInit.errorResult;
+  }
+  const adminClient = adminInit.client;
+
+  const authCheck = await verifyAdminCaller(adminClient, params.authHeader);
+  if ('status' in authCheck) {
+    return authCheck;
+  }
+
+  const method = (params.method || 'GET').toUpperCase();
+
+  if (method === 'GET') {
+    try {
+      const [{ data: profiles, error: profilesErr }, usersRes] = await Promise.all([
+        adminClient
+          .from('moderator_profiles')
+          .select('*')
+          .order('municipality_assigned', { ascending: true })
+          .order('full_name', { ascending: true }),
+        adminClient.auth.admin.listUsers({ page: 1, perPage: 200 }),
+      ]);
+
+      if (profilesErr) {
+        return { status: 500, body: { error: profilesErr.message } };
+      }
+
+      const authById = new Map<
+        string,
+        { email?: string; last_sign_in_at?: string | null }
+      >();
+      if (!usersRes.error && usersRes.data?.users) {
+        for (const u of usersRes.data.users) {
+          authById.set(u.id, {
+            email: u.email,
+            last_sign_in_at: u.last_sign_in_at ?? null,
+          });
+        }
+      }
+
+      const responders = (profiles ?? []).map((p) => {
+        const authMeta = authById.get(String(p.id));
+        return {
+          ...p,
+          email: authMeta?.email || p.email || '',
+          last_sign_in_at: authMeta?.last_sign_in_at ?? null,
+        };
+      });
+
+      return { status: 200, body: { responders } };
+    } catch (err) {
+      return {
+        status: 500,
+        body: {
+          error: err instanceof Error ? err.message : 'Unable to list responders.',
+        },
+      };
+    }
+  }
+
+  const body = (
+    params.body && typeof params.body === 'object' ? params.body : {}
+  ) as Record<string, unknown>;
+
+  if (method === 'POST') {
+    const email = sanitizeShortText(body.email, 160).toLowerCase();
+    const fullName = sanitizeShortText(body.full_name, 120);
+    const role = body.role === 'admin' ? 'admin' : 'moderator';
+    const municipalityAssigned =
+      sanitizeShortText(body.municipality_assigned, 100) ||
+      (role === 'admin' ? 'All Municipalities' : '');
+    const barangayAssigned =
+      sanitizeShortText(body.barangay_assigned, 120) ||
+      (municipalityAssigned ? `${municipalityAssigned} DRRMO` : '');
+
+    if (!EMAIL_REGEX.test(email)) {
+      return { status: 400, body: { error: 'A valid responder email is required.' } };
+    }
+    if (fullName.length < 2) {
+      return { status: 400, body: { error: 'Full name must be at least 2 characters.' } };
+    }
+    if (municipalityAssigned.length < 2) {
+      return { status: 400, body: { error: 'Assigned municipality is required.' } };
+    }
+    if (barangayAssigned.length < 2) {
+      return { status: 400, body: { error: 'Assigned office/barangay label is required.' } };
+    }
+
+    const generatedPassword = generateDefaultPassword(14);
+    const { data: createdAuth, error: authErr } =
+      await adminClient.auth.admin.createUser({
+        email,
+        password: generatedPassword,
+        email_confirm: true,
+        user_metadata: { full_name: fullName },
+      });
+
+    if (authErr || !createdAuth?.user) {
+      return {
+        status: 400,
+        body: {
+          error: authErr?.message || 'Unable to create Supabase Auth user.',
+        },
+      };
+    }
+
+    const newUserId = createdAuth.user.id;
+    let { data: profile, error: profErr } = await adminClient
+      .from('moderator_profiles')
+      .upsert({
+        id: newUserId,
+        email,
+        full_name: fullName,
+        role,
+        municipality_assigned: municipalityAssigned,
+        barangay_assigned: barangayAssigned,
+      })
+      .select('*')
+      .single();
+
+    if (profErr && (profErr.code === '42703' || profErr.message.includes('column'))) {
+      ({ data: profile, error: profErr } = await adminClient
+        .from('moderator_profiles')
+        .upsert({
+          id: newUserId,
+          full_name: fullName,
+          role,
+          municipality_assigned: municipalityAssigned,
+          barangay_assigned: barangayAssigned,
+        })
+        .select('*')
+        .single());
+    }
+
+    if (profErr || !profile) {
+      await adminClient.auth.admin.deleteUser(newUserId);
+      return {
+        status: 500,
+        body: {
+          error: profErr?.message || 'Failed to save responder assignment profile.',
+        },
+      };
+    }
+
+    return {
+      status: 201,
+      body: {
+        responder: {
+          ...profile,
+          email,
+          last_sign_in_at: null,
+        },
+        generatedPassword,
+      },
+    };
+  }
+
+  if (method === 'PATCH') {
+    const targetId = sanitizeShortText(body.id ?? params.queryId, 60);
+    if (!UUID_REGEX.test(targetId)) {
+      return { status: 400, body: { error: 'Valid responder ID is required.' } };
+    }
+
+    const fullName = sanitizeShortText(body.full_name, 120);
+    const role = body.role === 'admin' ? 'admin' : 'moderator';
+    const municipalityAssigned = sanitizeShortText(body.municipality_assigned, 100);
+    const barangayAssigned = sanitizeShortText(body.barangay_assigned, 120);
+    const resetPassword = body.reset_password === true;
+
+    if (targetId === authCheck.userId && role !== 'admin') {
+      return {
+        status: 400,
+        body: {
+          error: 'You cannot remove admin privileges from your own active account.',
+        },
+      };
+    }
+
+    if (fullName.length < 2 || municipalityAssigned.length < 2 || barangayAssigned.length < 2) {
+      return {
+        status: 400,
+        body: {
+          error: 'Full name, assigned municipality, and office/barangay are required.',
+        },
+      };
+    }
+
+    const { data: updatedProfile, error: updateErr } = await adminClient
+      .from('moderator_profiles')
+      .update({
+        full_name: fullName,
+        role,
+        municipality_assigned: municipalityAssigned,
+        barangay_assigned: barangayAssigned,
+      })
+      .eq('id', targetId)
+      .select('*')
+      .maybeSingle();
+
+    if (updateErr) {
+      return { status: 500, body: { error: updateErr.message } };
+    }
+    if (!updatedProfile) {
+      return { status: 404, body: { error: 'Responder profile not found.' } };
+    }
+
+    let generatedPassword: string | undefined;
+    if (resetPassword) {
+      generatedPassword = generateDefaultPassword(14);
+      const { error: pwdErr } = await adminClient.auth.admin.updateUserById(
+        targetId,
+        { password: generatedPassword }
+      );
+      if (pwdErr) {
+        return {
+          status: 500,
+          body: {
+            error: `Profile updated, but password reset failed: ${pwdErr.message}`,
+          },
+        };
+      }
+    }
+
+    const { data: authUserRes } = await adminClient.auth.admin.getUserById(targetId);
+
+    return {
+      status: 200,
+      body: {
+        responder: {
+          ...updatedProfile,
+          email: authUserRes?.user?.email || updatedProfile.email || '',
+          last_sign_in_at: authUserRes?.user?.last_sign_in_at ?? null,
+        },
+        ...(generatedPassword ? { generatedPassword } : {}),
+      },
+    };
+  }
+
+  if (method === 'DELETE') {
+    const targetId = sanitizeShortText(params.queryId ?? body.id, 60);
+    if (!UUID_REGEX.test(targetId)) {
+      return { status: 400, body: { error: 'Valid responder ID is required.' } };
+    }
+    if (targetId === authCheck.userId) {
+      return {
+        status: 400,
+        body: { error: 'You cannot delete your own active admin account.' },
+      };
+    }
+
+    const { error: deleteAuthErr } =
+      await adminClient.auth.admin.deleteUser(targetId);
+    if (deleteAuthErr) {
+      return { status: 500, body: { error: deleteAuthErr.message } };
+    }
+
+    await adminClient.from('moderator_profiles').delete().eq('id', targetId);
+
+    return {
+      status: 200,
+      body: { deletedId: targetId },
+    };
+  }
+
+  return {
+    status: 405,
+    body: { error: `Method ${method} not allowed.` },
+  };
 }

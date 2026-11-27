@@ -506,6 +506,9 @@ export default function App() {
   }
 
   async function handleDeleteReport(reportId: string) {
+    if (moderator?.role !== 'admin') {
+      throw new Error('Only admin accounts can permanently delete records.');
+    }
     if (isSupabaseConfigured && !isOffline && isUuid(reportId)) {
       await deleteHazardReport(reportId);
     }
@@ -524,6 +527,9 @@ export default function App() {
   }
 
   async function handleDeleteCenter(centerId: string) {
+    if (moderator?.role !== 'admin') {
+      throw new Error('Only admin accounts can permanently delete records.');
+    }
     if (isSupabaseConfigured && !isOffline && isUuid(centerId)) {
       await deleteEvacuationCenter(centerId);
     }
@@ -535,6 +541,9 @@ export default function App() {
   }
 
   async function handleDeleteAdvisory(advisoryId: string) {
+    if (moderator?.role !== 'admin') {
+      throw new Error('Only admin accounts can permanently delete records.');
+    }
     if (isSupabaseConfigured && !isOffline && isUuid(advisoryId)) {
       await deleteOfficialAdvisory(advisoryId);
     }
@@ -546,6 +555,9 @@ export default function App() {
   }
 
   async function handleDeleteCheckin(checkinId: string) {
+    if (moderator?.role !== 'admin') {
+      throw new Error('Only admin accounts can permanently delete records.');
+    }
     if (isSupabaseConfigured && !isOffline && isUuid(checkinId)) {
       await deleteSafetyCheckin(checkinId);
     }
@@ -712,6 +724,7 @@ export default function App() {
             onDemoSignIn={() =>
               setModerator({
                 id: 'demo-moderator',
+                email: 'admin@bayanihan.local',
                 full_name: 'Capt. Ramon Villanueva',
                 role: 'admin',
                 barangay_assigned: 'Brgy. Tatalon DRRMO (Preview)',
@@ -722,6 +735,7 @@ export default function App() {
               await signOutModerator();
               setModerator(null);
             }}
+            onOwnProfileUpdated={setModerator}
             onModerateReport={handleModerateReport}
             onDeleteReport={handleDeleteReport}
             onUpdateCenter={handleUpdateCenter}
