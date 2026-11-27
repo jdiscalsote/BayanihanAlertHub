@@ -56,8 +56,13 @@ export interface HazardReport {
   status: ReportStatus;
   confirmations_count: number;
   created_at: string;
+  updated_at?: string | null;
   verified_at?: string | null;
   verified_by?: string | null;
+  verified_by_name?: string | null;
+  dismissed_at?: string | null;
+  dismissed_by?: string | null;
+  dismissed_by_name?: string | null;
   latitude?: number | null;
   longitude?: number | null;
   /** Client-only flag when saved locally awaiting connectivity */

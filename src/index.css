@@ -22,9 +22,14 @@
   font-variant-numeric: tabular-nums;
 }
 
+:root {
+  --card-surface: #ffffff;
+}
+
 /* Battery-Saver / Low-Power Dark Mode for Brownouts */
 .battery-saver,
 .battery-saver body {
+  --card-surface: #0f172a;
   background-color: #090d16;
   color: #e2e8f0;
 }
@@ -44,8 +49,19 @@
 
 .battery-saver .bg-slate-50,
 .battery-saver .bg-slate-50\/70,
-.battery-saver .bg-slate-100 {
+.battery-saver .bg-slate-100,
+.battery-saver .bg-slate-200\/70 {
   background-color: #111c33 !important;
+}
+
+.battery-saver .hover\:bg-white:hover,
+.battery-saver .hover\:bg-slate-50:hover,
+.battery-saver .hover\:bg-slate-100:hover {
+  background-color: #1e293b !important;
+}
+
+.battery-saver .hover\:bg-slate-800:hover {
+  background-color: #243247 !important;
 }
 
 .battery-saver .border-slate-100,
@@ -53,6 +69,10 @@
 .battery-saver .border-slate-300,
 .battery-saver .divide-slate-200 {
   border-color: #1e293b !important;
+}
+
+.battery-saver .hover\:border-slate-300:hover {
+  border-color: #334155 !important;
 }
 
 .battery-saver .text-slate-900,
@@ -66,10 +86,90 @@
   color: #94a3b8 !important;
 }
 
+.battery-saver .hover\:text-slate-900:hover,
+.battery-saver .hover\:text-slate-800:hover {
+  color: #f8fafc !important;
+}
+
+.battery-saver .bg-amber-50,
+.battery-saver .bg-amber-50\/30 {
+  background-color: #271d0b !important;
+}
+
+.battery-saver .hover\:bg-amber-100:hover {
+  background-color: #3b2b10 !important;
+}
+
+.battery-saver .border-amber-200,
+.battery-saver .border-amber-300 {
+  border-color: #78350f !important;
+}
+
+.battery-saver .text-amber-700,
+.battery-saver .text-amber-800,
+.battery-saver .text-amber-900,
+.battery-saver .text-amber-950,
+.battery-saver .hover\:text-amber-800:hover {
+  color: #fcd34d !important;
+}
+
+.battery-saver .bg-red-50,
+.battery-saver .hover\:bg-red-50:hover {
+  background-color: #2c1016 !important;
+}
+
+.battery-saver .hover\:bg-red-100:hover {
+  background-color: #421720 !important;
+}
+
+.battery-saver .border-red-200 {
+  border-color: #7f1d1d !important;
+}
+
+.battery-saver .text-red-700,
+.battery-saver .text-red-800 {
+  color: #fca5a5 !important;
+}
+
+.battery-saver .bg-emerald-50 {
+  background-color: #07271d !important;
+}
+
+.battery-saver .hover\:bg-emerald-100:hover {
+  background-color: #0b3b2c !important;
+}
+
+.battery-saver .border-emerald-200,
+.battery-saver .border-emerald-300 {
+  border-color: #065f46 !important;
+}
+
+.battery-saver .text-emerald-700,
+.battery-saver .text-emerald-800,
+.battery-saver .text-emerald-900 {
+  color: #6ee7b7 !important;
+}
+
+.battery-saver .focus-visible\:outline-slate-900:focus-visible {
+  outline-color: #94a3b8 !important;
+}
+
+.battery-saver .focus\:border-slate-900:focus {
+  border-color: #94a3b8 !important;
+}
+
 .battery-saver input,
 .battery-saver select,
 .battery-saver textarea {
   background-color: #090d16 !important;
   color: #f1f5f9 !important;
   border-color: #334155 !important;
+}
+
+.battery-saver .disabled\:bg-slate-50:disabled {
+  background-color: #0b1120 !important;
+}
+
+.battery-saver .disabled\:text-slate-600:disabled {
+  color: #64748b !important;
 }

@@ -26,12 +26,13 @@
 ### 4. Offline-First Resilience, Auto-Sync & Battery-Saver Mode
 - Caches live hazard reports, evacuation center capacities, official advisories, and family safety check-ins locally via **IndexedDB** and **`localStorage`**.
 - Hazard reports and family check-ins submitted offline are queued on-device and automatically synced to **Supabase** once connectivity returns, with manual **Sync** and **Test Connection** controls.
-- Includes a **Simulate Offline** toggle in the feed toolbar and a **Battery-Saver Mode** toggle in the top bar that switches to a low-glare dark surface and pauses background polling, realtime subscriptions, and interactive map tiles to conserve phone battery.
+- Includes a **Simulate Offline** toggle in the feed toolbar and a **Battery-Saver Mode** toggle in the top bar that switches to a high-contrast, low-glare dark surface (including dark hover, focus, and alert states) and pauses background polling, realtime subscriptions, and interactive map tiles to conserve phone battery.
 
 ### 5. Evacuation Centers Directory & Responder Console
 - Nationwide directory of evacuation centers showing live occupancy progress bars, status badges, contact details, and one-tap **Find Safe Route** / **Google Maps** links.
-- Authenticated **Responder / Moderator Console** (Supabase Auth) scoped to assigned municipalities with role-based management tabs (permanent **Delete** actions across all tabs are restricted to **Admin** accounts only):
-  - **Report Triage:** Moderators can verify, resolve, or dismiss/archive hazard reports; Admins can also permanently **Delete** reports.
+- Authenticated **Responder / Moderator Console** (Supabase Auth) scoped to assigned municipalities with role-based management tabs (permanent **Delete** actions and **CSV Data Exports** across all tabs are restricted to **Admin** accounts only):
+  - **Data Management (Admin Only):** Dedicated card to export current hazard reports, evacuation center data, and family safety check-ins (scoped to the active Municipality filter or nationwide) as spreadsheet-safe UTF-8 CSV files with individual category **Export CSV** buttons, a **Download All** option, and a **Status Summary** pie-chart modal visualizing Pending, Verified, and Dismissed report distributions.
+  - **Report Triage:** Moderators can verify, resolve, restore, or dismiss/archive hazard reports and inspect any report's **Details & Timeline** log (exact creation, last updated, and moderator verification/dismissal audit trail); Admins can also permanently **Delete** reports.
   - **Evacuation Capacity:** Moderators can add shelters and update status & headcount; Admins can also permanently **Delete** shelters.
   - **Official Advisories:** Moderators can publish LGU advisories and deactivate/archive old bulletins; Admins can also permanently **Delete** them.
   - **Family Check-Ins:** Search and monitor Family *"I'm Safe"* check-in records across live database and local queues (**Delete** restricted to Admins).

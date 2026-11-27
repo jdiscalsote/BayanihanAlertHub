@@ -92,7 +92,7 @@ export interface LiveDataBundle {
 
 /**
  * Fetches lightweight, indexed slices optimized for Supabase Free Tier:
- * - Latest 40 non-dismissed hazard reports
+ * - Latest 60 hazard reports (RLS hides dismissed reports from public users while allowing moderators/admins to audit them)
  * - Evacuation centers ordered by barangay
  * - Active advisories ordered by recency
  */
@@ -104,9 +104,8 @@ export async function fetchAllLiveData(): Promise<LiveDataBundle | null> {
     supabase
       .from('hazard_reports')
       .select('*')
-      .neq('status', 'dismissed')
       .order('created_at', { ascending: false })
-      .limit(40),
+      .limit(60),
     supabase
       .from('evacuation_centers')
       .select('*')
@@ -632,6 +631,7 @@ export async function moderateHazardReport(
     is_verified?: boolean;
     status?: ReportStatus;
     moderatorId?: string;
+    moderatorName?: string;
   }
 ): Promise<void> {
   const supabase = getSupabaseClient();
@@ -642,28 +642,62 @@ export async function moderateHazardReport(
     );
   }
 
-  const payload: Record<string, unknown> = {};
+  const nowIso = new Date().toISOString();
+  const actorId =
+    updates.moderatorId && isUuid(updates.moderatorId)
+      ? updates.moderatorId
+      : null;
+  const actorName = updates.moderatorName?.trim() || null;
+
+  const basePayload: Record<string, unknown> = {};
   if (typeof updates.is_verified === 'boolean') {
-    payload.is_verified = updates.is_verified;
-    payload.verified_at = updates.is_verified ? new Date().toISOString() : null;
-    payload.verified_by =
-      updates.is_verified && updates.moderatorId && isUuid(updates.moderatorId)
-        ? updates.moderatorId
-        : null;
+    basePayload.is_verified = updates.is_verified;
+    basePayload.verified_at = updates.is_verified ? nowIso : null;
+    basePayload.verified_by = updates.is_verified ? actorId : null;
   }
   if (updates.status) {
-    payload.status = updates.status;
+    basePayload.status = updates.status;
   }
 
-  const { data, error } = await supabase
+  const extendedPayload: Record<string, unknown> = {
+    ...basePayload,
+    updated_at: nowIso,
+  };
+  if (typeof updates.is_verified === 'boolean') {
+    extendedPayload.verified_by_name = updates.is_verified ? actorName : null;
+  }
+  if (updates.status === 'dismissed') {
+    extendedPayload.dismissed_at = nowIso;
+    extendedPayload.dismissed_by = actorId;
+    extendedPayload.dismissed_by_name = actorName;
+  } else if (updates.status === 'active') {
+    extendedPayload.dismissed_at = null;
+    extendedPayload.dismissed_by = null;
+    extendedPayload.dismissed_by_name = null;
+  }
+
+  let result = await supabase
     .from('hazard_reports')
-    .update(payload)
+    .update(extendedPayload)
     .eq('id', reportId)
     .select('id')
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
-  if (!data) {
+  // Graceful fallback if the database hasn't had the new audit columns migrated yet
+  if (
+    result.error &&
+    /column|schema cache|PGRST204/i.test(result.error.message)
+  ) {
+    result = await supabase
+      .from('hazard_reports')
+      .update(basePayload)
+      .eq('id', reportId)
+      .select('id')
+      .maybeSingle();
+  }
+
+  if (result.error) throw new Error(result.error.message);
+  if (!result.data) {
     throw new Error(
       'Database update affected 0 rows. Confirm your user has a moderator_profiles row and UPDATE permissions.'
     );

@@ -384,27 +384,61 @@ export default function App() {
       await moderateHazardReport(reportId, {
         ...updates,
         moderatorId: moderator?.id,
+        moderatorName: moderator?.full_name,
       });
     }
 
+    const nowIso = new Date().toISOString();
     setReports((prev) => {
-      const updated = prev
-        .map((r) => {
-          if (r.id !== reportId) return r;
-          return {
-            ...r,
-            is_verified:
-              typeof updates.is_verified === 'boolean'
-                ? updates.is_verified
-                : r.is_verified,
-            status: updates.status ?? r.status,
-            verified_at:
-              updates.is_verified === true
-                ? new Date().toISOString()
-                : r.verified_at,
-          };
-        })
-        .filter((r) => r.status !== 'dismissed');
+      const updated = prev.map((r) => {
+        if (r.id !== reportId) return r;
+        const nextStatus = updates.status ?? r.status;
+        return {
+          ...r,
+          is_verified:
+            typeof updates.is_verified === 'boolean'
+              ? updates.is_verified
+              : r.is_verified,
+          status: nextStatus,
+          updated_at: nowIso,
+          verified_at:
+            typeof updates.is_verified === 'boolean'
+              ? updates.is_verified
+                ? nowIso
+                : null
+              : r.verified_at,
+          verified_by:
+            typeof updates.is_verified === 'boolean'
+              ? updates.is_verified
+                ? moderator?.id ?? null
+                : null
+              : r.verified_by,
+          verified_by_name:
+            typeof updates.is_verified === 'boolean'
+              ? updates.is_verified
+                ? moderator?.full_name ?? null
+                : null
+              : r.verified_by_name,
+          dismissed_at:
+            updates.status === 'dismissed'
+              ? nowIso
+              : updates.status === 'active'
+                ? null
+                : r.dismissed_at,
+          dismissed_by:
+            updates.status === 'dismissed'
+              ? moderator?.id ?? null
+              : updates.status === 'active'
+                ? null
+                : r.dismissed_by,
+          dismissed_by_name:
+            updates.status === 'dismissed'
+              ? moderator?.full_name ?? null
+              : updates.status === 'active'
+                ? null
+                : r.dismissed_by_name,
+        };
+      });
       void saveCachedReports(updated);
       return updated;
     });
@@ -634,7 +668,7 @@ export default function App() {
 
         {activeTab === 'feed' && (
           <LiveFeedView
-            reports={reports}
+            reports={reports.filter((r) => r.status !== 'dismissed')}
             queuedReports={queuedReports}
             centers={centers}
             filter={filter}
@@ -671,7 +705,10 @@ export default function App() {
         {activeTab === 'evacuation' && (
           <EvacuationDirectoryView
             centers={centers}
-            reports={[...queuedReports, ...reports]}
+            reports={[
+              ...queuedReports,
+              ...reports.filter((r) => r.status !== 'dismissed'),
+            ]}
             isOffline={isOffline}
             batterySaver={batterySaver}
             isRefreshing={isRefreshing}

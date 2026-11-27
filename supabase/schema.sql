@@ -59,8 +59,13 @@ CREATE TABLE IF NOT EXISTS public.hazard_reports (
   status TEXT NOT NULL CHECK (status IN ('active', 'resolved', 'dismissed')) DEFAULT 'active',
   confirmations_count INTEGER NOT NULL DEFAULT 1 CHECK (confirmations_count >= 1),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   verified_at TIMESTAMPTZ DEFAULT NULL,
   verified_by UUID REFERENCES public.moderator_profiles(id) ON DELETE SET NULL,
+  verified_by_name TEXT DEFAULT NULL,
+  dismissed_at TIMESTAMPTZ DEFAULT NULL,
+  dismissed_by UUID REFERENCES public.moderator_profiles(id) ON DELETE SET NULL,
+  dismissed_by_name TEXT DEFAULT NULL,
   latitude DOUBLE PRECISION DEFAULT NULL,
   longitude DOUBLE PRECISION DEFAULT NULL
 );
@@ -101,6 +106,11 @@ ALTER TABLE public.evacuation_centers
 ALTER TABLE public.hazard_reports
   ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT 'National Capital Region (NCR)',
   ADD COLUMN IF NOT EXISTS municipality TEXT NOT NULL DEFAULT 'Quezon City',
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS verified_by_name TEXT DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMPTZ DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS dismissed_by UUID REFERENCES public.moderator_profiles(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS dismissed_by_name TEXT DEFAULT NULL,
   ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION DEFAULT NULL,
   ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION DEFAULT NULL;
 ALTER TABLE public.advisories
@@ -209,6 +219,10 @@ BEGIN
     NEW.confirmations_count := 1;
     NEW.verified_at := NULL;
     NEW.verified_by := NULL;
+    NEW.verified_by_name := NULL;
+    NEW.dismissed_at := NULL;
+    NEW.dismissed_by := NULL;
+    NEW.dismissed_by_name := NULL;
   END IF;
   RETURN NEW;
 END;
@@ -234,6 +248,12 @@ $$;
 DROP TRIGGER IF EXISTS trg_evacuation_centers_updated_at ON public.evacuation_centers;
 CREATE TRIGGER trg_evacuation_centers_updated_at
   BEFORE UPDATE ON public.evacuation_centers
+  FOR EACH ROW
+  EXECUTE FUNCTION public.touch_updated_at();
+
+DROP TRIGGER IF EXISTS trg_hazard_reports_updated_at ON public.hazard_reports;
+CREATE TRIGGER trg_hazard_reports_updated_at
+  BEFORE UPDATE ON public.hazard_reports
   FOR EACH ROW
   EXECUTE FUNCTION public.touch_updated_at();
 

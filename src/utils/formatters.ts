@@ -19,6 +19,16 @@ export function formatClockTime(isoDate: string | null): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+export function formatExactTimestamp(isoDate: string | null | undefined): string {
+  if (!isoDate) return '—';
+  const date = new Date(isoDate);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString([], {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+}
+
 export function buildSafeGoogleMapsUrl(latitude: number, longitude: number): string {
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
     return 'https://www.google.com/maps';

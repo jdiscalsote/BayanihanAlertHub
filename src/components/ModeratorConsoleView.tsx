@@ -3,12 +3,15 @@ import {
   AlertTriangle,
   Check,
   CheckCircle2,
+  Clock,
   Copy,
+  Download,
   Eye,
   EyeOff,
   KeyRound,
   LogOut,
   Pencil,
+  PieChart,
   Plus,
   RefreshCw,
   Search,
@@ -39,7 +42,14 @@ import type {
   SafetyCheckin,
 } from '../types/alert';
 import { formatRelativeTime } from '../utils/formatters';
+import {
+  exportEvacuationCentersCsv,
+  exportHazardReportsCsv,
+  exportSafetyCheckinsCsv,
+} from '../utils/csvExport';
 import { LocationSelector } from './LocationSelector';
+import { ReportDetailsModal } from './ReportDetailsModal';
+import { ReportStatusSummaryModal } from './ReportStatusSummaryModal';
 
 const PREVIEW_DEMO_RESPONDERS: ModeratorProfile[] = [
   {
@@ -173,6 +183,8 @@ export function ModeratorConsoleView({
   const [isSaving, setIsSaving] = useState(false);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
   const [checkinSearch, setCheckinSearch] = useState('');
+  const [isStatusSummaryOpen, setIsStatusSummaryOpen] = useState(false);
+  const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
 
   // Shelter edit draft state keyed by center id
   const [editingCenterId, setEditingCenterId] = useState<string | null>(null);
@@ -294,10 +306,10 @@ export function ModeratorConsoleView({
   }, [moderator?.id, moderator?.municipality_assigned, moderator?.role, consoleTab]);
 
   useEffect(() => {
-    if (moderator?.role === 'admin' && consoleTab === 'responders') {
+    if (moderator?.role === 'admin') {
       void loadResponders();
     }
-  }, [moderator?.role, consoleTab, loadResponders]);
+  }, [moderator?.role, loadResponders]);
 
   async function handleLoginSubmit(e: FormEvent) {
     e.preventDefault();
@@ -547,8 +559,113 @@ export function ModeratorConsoleView({
     (r) => !r.is_verified && r.status === 'active'
   );
   const verifiedOrResolved = scopedReports.filter(
-    (r) => r.is_verified || r.status === 'resolved'
+    (r) => (r.is_verified || r.status === 'resolved') && r.status !== 'dismissed'
   );
+  const dismissedReports = scopedReports.filter(
+    (r) => r.status === 'dismissed'
+  );
+  const selectedReport = selectedReportId
+    ? reports.find((r) => r.id === selectedReportId) ?? null
+    : null;
+
+  const handleExportReportsCsv = () => {
+    if (moderator.role !== 'admin') {
+      setActionError('Only admin accounts can export CSV data.');
+      return;
+    }
+    setActionError(null);
+    if (scopedReports.length === 0) {
+      setActionError('No hazard reports available in the current scope to export.');
+      return;
+    }
+    const { filename, count } = exportHazardReportsCsv(
+      scopedReports,
+      effectiveMunicipality
+    );
+    setActionNotice(
+      `Exported ${count} hazard ${count === 1 ? 'report' : 'reports'} to ${filename}.`
+    );
+  };
+
+  const handleExportCentersCsv = () => {
+    if (moderator.role !== 'admin') {
+      setActionError('Only admin accounts can export CSV data.');
+      return;
+    }
+    setActionError(null);
+    if (scopedCenters.length === 0) {
+      setActionError(
+        'No evacuation centers available in the current scope to export.'
+      );
+      return;
+    }
+    const { filename, count } = exportEvacuationCentersCsv(
+      scopedCenters,
+      effectiveMunicipality
+    );
+    setActionNotice(
+      `Exported ${count} evacuation ${count === 1 ? 'center' : 'centers'} to ${filename}.`
+    );
+  };
+
+  const handleExportCheckinsCsv = () => {
+    if (moderator.role !== 'admin') {
+      setActionError('Only admin accounts can export CSV data.');
+      return;
+    }
+    setActionError(null);
+    if (scopedCheckins.length === 0) {
+      setActionError(
+        'No family check-ins available in the current scope to export.'
+      );
+      return;
+    }
+    const { filename, count } = exportSafetyCheckinsCsv(
+      scopedCheckins,
+      effectiveMunicipality
+    );
+    setActionNotice(
+      `Exported ${count} family ${count === 1 ? 'check-in' : 'check-ins'} to ${filename}.`
+    );
+  };
+
+  const handleExportAllCsv = () => {
+    if (moderator.role !== 'admin') {
+      setActionError('Only admin accounts can export CSV data.');
+      return;
+    }
+    setActionError(null);
+    if (
+      scopedReports.length === 0 &&
+      scopedCenters.length === 0 &&
+      scopedCheckins.length === 0
+    ) {
+      setActionError(
+        'No hazard reports, evacuation centers, or family check-ins to export.'
+      );
+      return;
+    }
+    const exportedParts: string[] = [];
+    if (scopedReports.length > 0) {
+      const repRes = exportHazardReportsCsv(scopedReports, effectiveMunicipality);
+      exportedParts.push(`${repRes.count} reports`);
+    }
+    if (scopedCenters.length > 0) {
+      const ctrRes = exportEvacuationCentersCsv(
+        scopedCenters,
+        effectiveMunicipality
+      );
+      exportedParts.push(`${ctrRes.count} evacuation centers`);
+    }
+    if (scopedCheckins.length > 0) {
+      const chkRes = exportSafetyCheckinsCsv(
+        scopedCheckins,
+        effectiveMunicipality
+      );
+      exportedParts.push(`${chkRes.count} family check-ins`);
+    }
+    setActionNotice(`Exported CSV files for ${exportedParts.join(', ')}.`);
+  };
 
   return (
     <div className="space-y-6">
@@ -604,6 +721,130 @@ export function ModeratorConsoleView({
           </button>
         </div>
       </div>
+
+      {/* Admin-Only Data Management Card */}
+      {moderator.role === 'admin' && (
+        <section
+          aria-labelledby="data-management-heading"
+          className="rounded-lg border border-slate-200 bg-white p-5"
+        >
+          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+            <div>
+              <h2
+                id="data-management-heading"
+                className="font-display text-sm font-semibold text-slate-900"
+              >
+                Data Management
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-600">
+                Export spreadsheet-safe CSV snapshots for{' '}
+                <span className="font-semibold text-slate-800">
+                  {effectiveMunicipality === 'All'
+                    ? 'All Municipalities'
+                    : effectiveMunicipality}
+                </span>
+                .
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+              <button
+                type="button"
+                onClick={() => setIsStatusSummaryOpen(true)}
+                className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                <PieChart className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Status Summary</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleExportAllCsv}
+                disabled={
+                  scopedReports.length === 0 &&
+                  scopedCenters.length === 0 &&
+                  scopedCheckins.length === 0
+                }
+                className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>
+                  Download All (
+                  {scopedReports.length +
+                    scopedCenters.length +
+                    scopedCheckins.length}
+                  )
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 p-3.5">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-slate-900">
+                  Hazard Reports
+                </p>
+                <p className="mt-0.5 font-mono text-xs tabular-nums text-slate-600">
+                  {scopedReports.length}{' '}
+                  {scopedReports.length === 1 ? 'record' : 'records'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleExportReportsCsv}
+                disabled={scopedReports.length === 0}
+                className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Export CSV</span>
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 p-3.5">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-slate-900">
+                  Evacuation Centers
+                </p>
+                <p className="mt-0.5 font-mono text-xs tabular-nums text-slate-600">
+                  {scopedCenters.length}{' '}
+                  {scopedCenters.length === 1 ? 'center' : 'centers'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleExportCentersCsv}
+                disabled={scopedCenters.length === 0}
+                className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Export CSV</span>
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 p-3.5">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-slate-900">
+                  Family Check-Ins
+                </p>
+                <p className="mt-0.5 font-mono text-xs tabular-nums text-slate-600">
+                  {scopedCheckins.length}{' '}
+                  {scopedCheckins.length === 1 ? 'check-in' : 'check-ins'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleExportCheckinsCsv}
+                disabled={scopedCheckins.length === 0}
+                className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Export CSV</span>
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
 
       {actionError && (
         <div
@@ -758,6 +999,14 @@ export function ModeratorConsoleView({
                     <div className="flex flex-wrap items-center gap-2 shrink-0">
                       <button
                         type="button"
+                        onClick={() => setSelectedReportId(rep.id)}
+                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Details &amp; Timeline</span>
+                      </button>
+                      <button
+                        type="button"
                         onClick={() =>
                           void runAction(
                             () => onModerateReport(rep.id, { is_verified: true }),
@@ -831,9 +1080,18 @@ export function ModeratorConsoleView({
                     </p>
                     <p className="text-xs text-slate-500">
                       {rep.category} · {rep.status === 'resolved' ? 'Resolved' : 'Verified Active'}
+                      {rep.verified_by_name ? ` · Verified by ${rep.verified_by_name}` : ''}
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedReportId(rep.id)}
+                      className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    >
+                      <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>Details &amp; Timeline</span>
+                    </button>
                     {rep.status !== 'resolved' && (
                       <button
                         type="button"
@@ -869,6 +1127,74 @@ export function ModeratorConsoleView({
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Dismissed / Archived Reports */}
+          <div className="rounded-lg border border-slate-200 bg-white">
+            <div className="border-b border-slate-200 px-5 py-3.5">
+              <h2 className="font-display text-sm font-semibold text-slate-900">
+                Dismissed &amp; Archived Reports ({dismissedReports.length})
+              </h2>
+            </div>
+            {dismissedReports.length === 0 ? (
+              <p className="px-5 py-6 text-center text-xs text-slate-500">
+                No dismissed reports in this municipality scope.
+              </p>
+            ) : (
+              <div className="divide-y divide-slate-200">
+                {dismissedReports.map((rep) => (
+                  <div
+                    key={rep.id}
+                    className="flex flex-col justify-between gap-3 px-5 py-3.5 sm:flex-row sm:items-center"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-slate-900">
+                        {rep.barangay}
+                        {rep.municipality ? `, ${rep.municipality}` : ''} —{' '}
+                        {rep.street_or_landmark}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {rep.category} · Dismissed
+                        {rep.dismissed_by_name
+                          ? ` by ${rep.dismissed_by_name}`
+                          : ''}
+                        {' · '}
+                        {formatRelativeTime(
+                          rep.dismissed_at || rep.updated_at || rep.created_at
+                        )}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedReportId(rep.id)}
+                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Details &amp; Timeline</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void runAction(
+                            () => onModerateReport(rep.id, { status: 'active' }),
+                            `Restored report at ${rep.street_or_landmark} to active.`
+                          )
+                        }
+                        className="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        Restore
+                      </button>
+                      {renderDeleteControl(
+                        `report:${rep.id}`,
+                        () => onDeleteReport(rep.id),
+                        `Permanently deleted report at ${rep.street_or_landmark}.`
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -2515,6 +2841,18 @@ export function ModeratorConsoleView({
           </form>
         </div>
       )}
+      <ReportStatusSummaryModal
+        isOpen={isStatusSummaryOpen}
+        onClose={() => setIsStatusSummaryOpen(false)}
+        reports={scopedReports}
+        scopeLabel={effectiveMunicipality}
+      />
+      <ReportDetailsModal
+        report={selectedReport}
+        onClose={() => setSelectedReportId(null)}
+        currentModerator={moderator}
+        responders={responders}
+      />
     </div>
   );
 }
